@@ -25,24 +25,33 @@ CREATE TABLE IF NOT EXISTS tenants (
   primary_color   VARCHAR(20),
   brass_color     VARCHAR(20),
   logo_url        VARCHAR(500),
+  allowed_email_domain VARCHAR(190),
   is_active       BOOLEAN       NOT NULL DEFAULT TRUE,
   created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMP     NOT NULL DEFAULT NOW()
 );
 
 -- ------------------------------------------------------------
--- users — email unique per tenant, not globally
+-- users — email unique per tenant, not globally. The seeded admin is
+-- also the tenant's super admin (is_super_admin=true): that one account
+-- can never be deleted, demoted, or deactivated by anyone, including
+-- other admins. email_verified / mobile / mobile_verified are groundwork
+-- for future verification flows (not enforced anywhere yet).
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
-  id            SERIAL PRIMARY KEY,
-  tenant_id     INTEGER       NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  name          VARCHAR(120)  NOT NULL,
-  email         VARCHAR(190)  NOT NULL,
-  password_hash VARCHAR(255)  NOT NULL,
-  role          user_role     NOT NULL DEFAULT 'agent',
-  is_active     BOOLEAN       NOT NULL DEFAULT TRUE,
-  created_at    TIMESTAMP     NOT NULL DEFAULT NOW(),
-  updated_at    TIMESTAMP     NOT NULL DEFAULT NOW(),
+  id              SERIAL PRIMARY KEY,
+  tenant_id       INTEGER       NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name            VARCHAR(120)  NOT NULL,
+  email           VARCHAR(190)  NOT NULL,
+  email_verified  BOOLEAN       NOT NULL DEFAULT FALSE,
+  mobile          VARCHAR(40),
+  mobile_verified BOOLEAN       NOT NULL DEFAULT FALSE,
+  password_hash   VARCHAR(255)  NOT NULL,
+  role            user_role     NOT NULL DEFAULT 'agent',
+  is_active       BOOLEAN       NOT NULL DEFAULT TRUE,
+  is_super_admin  BOOLEAN       NOT NULL DEFAULT FALSE,
+  created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMP     NOT NULL DEFAULT NOW(),
   UNIQUE (tenant_id, email)
 );
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
@@ -163,14 +172,15 @@ INSERT INTO tenants (id, name, slug, app_name)
 VALUES (1, 'Default', 'default', 'Viewing Register')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO users (id, tenant_id, name, email, password_hash, role)
+INSERT INTO users (id, tenant_id, name, email, password_hash, role, is_super_admin)
 VALUES (
   1,
   1,
   'Admin',
   'admin@example.com',
   '$2b$10$haTEt1tfs3Imttd5lNuqEecAlyC97.pfy538PsmhWmQNoEBMbJYZ6',
-  'admin'
+  'admin',
+  TRUE
 )
 ON CONFLICT (tenant_id, email) DO NOTHING;
 

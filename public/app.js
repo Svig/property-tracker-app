@@ -619,26 +619,53 @@ function attachDrawerHandlers(){
 }
 
 // ================= MANAGE USERS (admin only) =================
-let newUserForm = { name:'', email:'', password:'', role:'agent' };
+let newUserForm = { name:'', email:'', mobile:'', password:'', role:'agent' };
+let editingUserId = null;
+let editUserDraft = {};
 
 function renderUsers(){
   return `
     <div class="card" style="margin-bottom:20px">
-      ${state.users.map(u => `
+      ${state.users.map(u => {
+        const isSelf = u.id === state.user.id;
+        const locked = u.is_super_admin; // protected from anyone, including other admins
+        if (editingUserId === u.id) {
+          return `
+            <div class="user-row" data-editrow="${u.id}">
+              <div style="flex:1;min-width:240px;display:flex;flex-direction:column;gap:8px">
+                <input type="text" id="eu_name" value="${escapeHtml(editUserDraft.name)}" placeholder="Name">
+                <input type="email" id="eu_email" value="${escapeHtml(editUserDraft.email)}" placeholder="Email">
+                <input type="tel" id="eu_mobile" value="${escapeHtml(editUserDraft.mobile)}" placeholder="Mobile number (optional)">
+              </div>
+              <div class="user-actions">
+                <button class="btn brass" data-save-user="${u.id}" style="padding:8px 14px;font-size:12.5px">Save</button>
+                <button class="btn secondary" data-cancel-edit-user style="padding:8px 14px;font-size:12.5px">Cancel</button>
+              </div>
+            </div>
+          `;
+        }
+        return `
         <div class="user-row">
           <div>
-            <div class="u-name">${escapeHtml(u.name)} ${u.id===state.user.id ? '<span style="color:var(--ink-light);font-weight:400">(you)</span>' : ''}</div>
-            <div class="u-email">${escapeHtml(u.email)}</div>
+            <div class="u-name">
+              ${escapeHtml(u.name)}
+              ${isSelf ? '<span style="color:var(--ink-light);font-weight:400"> (you)</span>' : ''}
+              ${locked ? '<span class="chip role-admin" style="margin-left:6px">Super Admin</span>' : ''}
+            </div>
+            <div class="u-email">${escapeHtml(u.email)}${u.mobile ? ' \u00b7 '+escapeHtml(u.mobile) : ''}</div>
           </div>
           <div class="user-actions">
             <span class="chip role-${u.role}">${u.role}</span>
             <span class="chip ${u.is_active ? 'won' : 'lost'}">${u.is_active ? 'active' : 'disabled'}</span>
+            <button class="btn secondary" data-edit-user="${u.id}" style="padding:6px 12px;font-size:12px">Edit</button>
             <button class="btn secondary" data-reset-pw="${u.id}" style="padding:6px 12px;font-size:12px">Reset password</button>
-            ${u.id!==state.user.id ? `<button class="btn secondary" data-toggle="${u.id}" data-active="${u.is_active ? 'true' : 'false'}" style="padding:6px 12px;font-size:12px">${u.is_active?'Disable':'Enable'}</button>
+            ${!locked ? `<button class="btn secondary" data-role="${u.id}" data-current-role="${u.role}" style="padding:6px 12px;font-size:12px">${u.role==='admin' ? 'Demote to Agent' : 'Promote to Admin'}</button>` : ''}
+            ${!locked && !isSelf ? `<button class="btn secondary" data-toggle="${u.id}" data-active="${u.is_active ? 'true' : 'false'}" style="padding:6px 12px;font-size:12px">${u.is_active?'Disable':'Enable'}</button>
             <button class="danger-link" data-del="${u.id}">Delete</button>` : ''}
           </div>
         </div>
-      `).join('')}
+      `;
+      }).join('')}
     </div>
 
     <div class="card" style="padding:22px;max-width:460px">
@@ -646,6 +673,7 @@ function renderUsers(){
       <form id="newUserForm">
         <div class="field"><label>Name</label><input type="text" id="nu_name" required></div>
         <div class="field"><label>Email</label><input type="email" id="nu_email" required></div>
+        <div class="field"><label>Mobile number (optional)</label><input type="tel" id="nu_mobile" placeholder="082 000 0000"></div>
         <div class="field"><label>Temporary password</label><input type="password" id="nu_password" minlength="8" required></div>
         <div class="field">
           <label>Role</label>
@@ -661,6 +689,51 @@ function renderUsers(){
 }
 
 function attachUsersHandlers(){
+  document.querySelectorAll('[data-edit-user]').forEach(b => {
+    b.onclick = () => {
+      const u = state.users.find(x => x.id == b.dataset.editUser);
+      editingUserId = u.id;
+      editUserDraft = { name: u.name, email: u.email, mobile: u.mobile || '' };
+      render();
+    };
+  });
+  document.querySelectorAll('[data-cancel-edit-user]').forEach(b => {
+    b.onclick = () => { editingUserId = null; render(); };
+  });
+  ['eu_name','eu_email','eu_mobile'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.oninput = e => {
+      const key = id === 'eu_name' ? 'name' : id === 'eu_email' ? 'email' : 'mobile';
+      editUserDraft[key] = e.target.value;
+    };
+  });
+  document.querySelectorAll('[data-save-user]').forEach(b => {
+    b.onclick = async () => {
+      try {
+        const { user } = await api(`/users/${b.dataset.saveUser}`, { method:'PATCH', body: editUserDraft });
+        state.users = state.users.map(u => u.id === user.id ? user : u);
+        editingUserId = null;
+        render();
+        showToast('User details updated.');
+      } catch (err) { showToast(err.message); }
+    };
+  });
+
+  document.querySelectorAll('[data-role]').forEach(b => {
+    b.onclick = async () => {
+      const id = b.dataset.role;
+      const newRole = b.dataset.currentRole === 'admin' ? 'agent' : 'admin';
+      const verb = newRole === 'admin' ? 'promote this user to Admin' : 'demote this user to Agent';
+      if (!confirm(`Are you sure you want to ${verb}?`)) return;
+      try {
+        const { user } = await api(`/users/${id}`, { method:'PATCH', body:{ role: newRole } });
+        state.users = state.users.map(u => u.id === user.id ? user : u);
+        render();
+      } catch (err) { showToast(err.message); }
+    };
+  });
+
   document.querySelectorAll('[data-reset-pw]').forEach(b => {
     b.onclick = async () => {
       const newPassword = prompt('Enter a new password for this user (at least 8 characters):');
@@ -677,8 +750,8 @@ function attachUsersHandlers(){
       const id = b.dataset.toggle;
       const nowActive = b.dataset.active === 'true';
       try {
-        await api(`/users/${id}`, { method:'PATCH', body:{ is_active: !nowActive } });
-        state.users = state.users.map(u => u.id == id ? { ...u, is_active: !nowActive } : u);
+        const { user } = await api(`/users/${id}`, { method:'PATCH', body:{ is_active: !nowActive } });
+        state.users = state.users.map(u => u.id == id ? user : u);
         render();
       } catch (err) { showToast(err.message); }
     };
@@ -698,6 +771,7 @@ function attachUsersHandlers(){
     const body = {
       name: document.getElementById('nu_name').value,
       email: document.getElementById('nu_email').value,
+      mobile: document.getElementById('nu_mobile').value,
       password: document.getElementById('nu_password').value,
       role: document.getElementById('nu_role').value,
     };

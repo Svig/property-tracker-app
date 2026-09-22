@@ -172,7 +172,61 @@ All endpoints except `/api/auth/login` require `Authorization: Bearer <token>`.
 
 ---
 
-## Changelog — bug fix + new features (this round)
+## Changelog — hosting fixes, super admin, user profiles (latest round)
+
+**Hosting/deployment fixes, from getting this actually running on Render + Aiven:**
+- The app now bootstraps its own database schema on every startup (creates
+  tables, seeds the admin, safe to run repeatedly) — see `backend/scripts/bootstrap-db.js`.
+  This exists because your machine couldn't reach Aiven directly (likely a
+  corporate firewall blocking the non-standard port), but Render's servers
+  could — so the app initializing itself removes the need to connect from
+  your laptop at all.
+- `db.js` now accepts a single `DATABASE_URL` connection string (what
+  Aiven/Supabase/Neon show you directly) instead of requiring five separate
+  `DB_HOST`/`DB_PORT`/etc variables. It also detects and correctly parses
+  that same string if it gets pasted into `DB_HOST` by mistake (an easy
+  slip since providers display it as one field) — with a warning to move
+  it to `DATABASE_URL` properly, but it works either way now.
+- SSL support (`DB_SSL`, `DB_SSL_CA`) for hosted databases, which require
+  it — the original local-only version had no SSL config at all.
+
+**Super admin protection:** the very first admin account (seeded on
+first boot) is now flagged `is_super_admin` and can never be demoted,
+deactivated, or deleted by anyone — including other admins, not just
+themselves. This guarantees a tenant can never accidentally lock itself
+out of admin access. Every other admin can be freely promoted, demoted,
+or removed by any admin.
+
+**Role changes:** any admin can now promote an agent to admin or demote
+an admin back to agent, from a button on their row in Manage Users (not
+available for the super admin, or as a way to demote yourself — the
+existing self-protection and the new super-admin protection both still
+apply).
+
+**User profile editing:** name, email, and a new optional mobile number
+field can now be edited per user from Manage Users (an "Edit" button
+opens inline fields). Changing a user's email or mobile automatically
+resets `email_verified`/`mobile_verified` back to unverified — there's no
+verification flow wired up yet (see below), but the fields exist and the
+flag resets correctly so a future verification feature has accurate data
+to work from.
+
+**Groundwork for future verification (not enforced yet, by design):**
+- `users.email_verified`, `users.mobile`, `users.mobile_verified` columns
+  exist now, but nothing in the app currently checks them — login isn't
+  gated on verification, and there's no "verify" flow yet for either.
+- `tenants.allowed_email_domain` exists for a mentioned future idea:
+  restricting new user emails to a tenant's own domain (e.g. only
+  `@youragency.co.za` addresses). Also unused for now — just a column
+  ready for that logic later, same reasoning as adding `tenant_id` early.
+- When you're ready to build either: email verification would need a
+  token-based confirmation link (and a way to send email, which nothing
+  in this stack currently does), and mobile verification would need an
+  SMS provider (Twilio or similar) for an OTP code. Both are meaningfully
+  sized features on their own — flag it when you want to tackle one and
+  we can scope it properly rather than bolt on something half-working.
+
+### Previous round — modal bug fix, sign-in form changes, managed properties
 
 **Bug fix:** the "Save & Continue" / client-detail popups weren't closing.
 Root cause: `public/app.js` appends modals directly to `<body>` (so they can
@@ -213,11 +267,14 @@ label:
 
 **Migrating an existing local database:** don't re-run `init.mariadb.sql`
 or `init.postgres.sql` against a database you already set up — it'll try
-to recreate tables that exist. Instead run the matching migration script
-in `database/migrate_002_properties.*.sql`, which adds the new tables and
-columns and backfills a Property row for every property name already in
-your data. A fresh install just uses the (now-updated) init scripts as
-before.
+to recreate tables that exist. Instead run the matching migration
+script(s) for whatever you're missing:
+- `database/migrate_002_properties.*.sql` — properties, property linking
+- `database/migrate_004_user_profile.*.sql` — super admin flag, mobile
+  number, verification-groundwork columns
+
+A fresh install (including the auto-bootstrap on first deploy) just uses
+the current init scripts directly and gets everything in one go.
 
 ---
 

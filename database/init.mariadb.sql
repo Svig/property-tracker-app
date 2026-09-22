@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   primary_color   VARCHAR(20)   NULL,
   brass_color     VARCHAR(20)   NULL,
   logo_url        VARCHAR(500)  NULL,
+  allowed_email_domain VARCHAR(190) NULL,
   is_active       TINYINT(1)    NOT NULL DEFAULT 1,
   created_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -37,20 +38,29 @@ CREATE TABLE IF NOT EXISTS tenants (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
--- users — application logins. First user is seeded as admin.
--- Email is unique per tenant, not globally, so two different
--- companies can each onboard someone with the same address.
+-- users — application logins. First user is seeded as admin AND as the
+-- tenant's super admin (is_super_admin=1): that one account can never be
+-- deleted, demoted, or deactivated by anyone — including other admins —
+-- so a tenant can never accidentally lock itself out of admin access.
+-- Email is unique per tenant, not globally, so two different companies
+-- can each onboard someone with the same address.
+-- email_verified / mobile_verified / mobile are groundwork for future
+-- verification flows (not enforced anywhere yet — see README).
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
-  id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  tenant_id     INT UNSIGNED        NOT NULL,
-  name          VARCHAR(120)        NOT NULL,
-  email         VARCHAR(190)        NOT NULL,
-  password_hash VARCHAR(255)        NOT NULL,
-  role          ENUM('admin','agent') NOT NULL DEFAULT 'agent',
-  is_active     TINYINT(1)          NOT NULL DEFAULT 1,
-  created_at    DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at    DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id       INT UNSIGNED        NOT NULL,
+  name            VARCHAR(120)        NOT NULL,
+  email           VARCHAR(190)        NOT NULL,
+  email_verified  TINYINT(1)          NOT NULL DEFAULT 0,
+  mobile          VARCHAR(40)         NULL,
+  mobile_verified TINYINT(1)          NOT NULL DEFAULT 0,
+  password_hash   VARCHAR(255)        NOT NULL,
+  role            ENUM('admin','agent') NOT NULL DEFAULT 'agent',
+  is_active       TINYINT(1)          NOT NULL DEFAULT 1,
+  is_super_admin  TINYINT(1)          NOT NULL DEFAULT 0,
+  created_at      DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_users_tenant_email (tenant_id, email),
   KEY idx_users_tenant (tenant_id),
   CONSTRAINT fk_users_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
@@ -204,14 +214,15 @@ CREATE TABLE IF NOT EXISTS recent_properties (
 INSERT IGNORE INTO tenants (id, name, slug, app_name)
 VALUES (1, 'Default', 'default', 'Viewing Register');
 
-INSERT IGNORE INTO users (id, tenant_id, name, email, password_hash, role)
+INSERT IGNORE INTO users (id, tenant_id, name, email, password_hash, role, is_super_admin)
 VALUES (
   1,
   1,
   'Admin',
   'admin@example.com',
   '$2b$10$haTEt1tfs3Imttd5lNuqEecAlyC97.pfy538PsmhWmQNoEBMbJYZ6',
-  'admin'
+  'admin',
+  1
 );
 
 INSERT IGNORE INTO current_viewing (user_id, tenant_id, property) VALUES (1, 1, NULL);
