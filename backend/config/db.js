@@ -7,6 +7,22 @@ require('dotenv').config();
 
 const DB_CLIENT = (process.env.DB_CLIENT || 'mariadb').toLowerCase();
 
+// Hosted databases (Aiven, Supabase, Neon, etc.) require SSL — a local
+// MariaDB/Postgres install usually doesn't. Set DB_SSL=true when pointing
+// at a hosted database. DB_SSL_CA can hold the provider's CA certificate
+// (paste its full contents, including the BEGIN/END lines, as one .env
+// value) for a properly verified connection; without it, the connection
+// is still encrypted but the server's certificate isn't verified against
+// a known CA — acceptable for a small internal tool, but the CA is the
+// safer option where the provider makes one available.
+const useSsl = String(process.env.DB_SSL).toLowerCase() === 'true';
+function sslConfig() {
+  if (!useSsl) return undefined;
+  return process.env.DB_SSL_CA
+    ? { ca: process.env.DB_SSL_CA }
+    : { rejectUnauthorized: false };
+}
+
 let pool;
 let placeholder; // how each engine wants bound parameters written
 
@@ -19,6 +35,7 @@ if (DB_CLIENT === 'postgres' || DB_CLIENT === 'postgresql') {
     password: process.env.DB_PASSWORD || '',
     database: process.env.DB_NAME || 'viewing_register',
     max: 10,
+    ssl: sslConfig(),
   });
   placeholder = 'postgres'; // $1, $2, ...
 } else {
@@ -31,6 +48,7 @@ if (DB_CLIENT === 'postgres' || DB_CLIENT === 'postgresql') {
     database: process.env.DB_NAME || 'viewing_register',
     waitForConnections: true,
     connectionLimit: 10,
+    ssl: sslConfig(),
   });
   placeholder = 'mysql'; // ?, ?, ...
 }
