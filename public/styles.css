@@ -50,9 +50,16 @@ input[type=text], input[type=tel], input[type=email], input[type=password], sele
   width:100%; font-family:var(--font-body); font-size:15px; padding:11px 12px; border:1px solid var(--line); border-radius:2px; background:var(--white); color:var(--ink);
 }
 input:focus, select:focus, textarea:focus{ outline:2px solid var(--brass); outline-offset:1px; }
+input[readonly]{ background:var(--paper); color:var(--ink-light); cursor:not-allowed; }
 .field{ margin-bottom:16px; }
 .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
 @media(max-width:640px){ .grid2{ grid-template-columns:1fr; } }
+.currency-field{ position:relative; }
+.currency-field .currency-prefix{
+  position:absolute; left:12px; top:50%; transform:translateY(-50%);
+  color:var(--ink-light); font-weight:600; font-size:15px; pointer-events:none;
+}
+.currency-field input{ padding-left:28px; }
 .error-text{ color:var(--rust); font-size:13px; margin-top:4px; }
 
 .chip{ display:inline-flex; align-items:center; font-family:var(--font-mono); font-size:11px; letter-spacing:0.4px; text-transform:uppercase; padding:4px 9px; border-radius:20px; font-weight:500; }

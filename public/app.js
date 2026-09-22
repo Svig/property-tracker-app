@@ -12,21 +12,28 @@ const STATUSES = [
 const FINANCING = ['Cash buyer','Bond pre-approved','Needs bond approval','Not sure yet'];
 const TIMELINE = ['Immediately','1\u20133 months','3\u20136 months','Just browsing'];
 const SOURCE = ['Signboard','Online listing','Referral','Walk-in','Repeat client','Other'];
+const CURRENCY = 'R'; // South African Rand — change this one constant to rebrand currency
 
 const statusMeta = k => STATUSES.find(s => s.k === k) || STATUSES[0];
 const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('en-ZA', { day:'2-digit', month:'short', year:'numeric' }) : '\u2014';
 const fmtWhen = iso => { const d = new Date(iso); return d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short'}) + ' \u00b7 ' + d.toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit'}); };
+const digitsOnly = s => (s || '').replace(/[^\d]/g, '');
+const formatThousands = digits => digits ? Number(digits).toLocaleString('en-ZA') : '';
 
 // ---------------- app state ----------------
 const state = {
   token: localStorage.getItem('vr_token') || null,
   user: null,
-  view: 'signin',           // signin | dashboard | users
+  view: 'signin',           // signin | dashboard | users | properties
   clients: [],
-  viewing: { property:'', recent:[] },
+  viewing: { property:'', propertyId:null, listingUrl:null, recent:[] },
   users: [],
+  properties: [],
+  historyCache: {},         // clientId -> [{...}] viewing history across properties
   selectedClientId: null,
   editingProperty: false,
+  visitorsForPropertyId: null,
+  agentsForPropertyId: null,
   loading: true,
   toast: null,
   authError: null,
@@ -75,9 +82,10 @@ async function bootstrap(){
 }
 
 async function loadAll(){
-  const [clientsRes, viewingRes] = await Promise.all([api('/clients'), api('/viewing/current')]);
+  const [clientsRes, viewingRes, propertiesRes] = await Promise.all([api('/clients'), api('/viewing/current'), api('/properties')]);
   state.clients = clientsRes.clients;
   state.viewing = viewingRes;
+  state.properties = propertiesRes.properties;
   if (state.user.role === 'admin') {
     const { users } = await api('/users');
     state.users = users;
@@ -86,6 +94,18 @@ async function loadAll(){
 
 // ---------------- render dispatcher ----------------
 function render(){
+  // These are appended directly to <body> (outside #root) so they can sit
+  // above everything, but that means nothing ever clears them automatically
+  // the way root.innerHTML reassignment does. Remove any leftover ones from
+  // the previous render before deciding whether a fresh one is needed —
+  // otherwise closing a modal leaves an invisible-but-still-there copy
+  // stacking up in the DOM (this was the "Save & Continue doesn't close it"
+  // bug).
+  document.getElementById('drawerOverlay')?.remove();
+  document.getElementById('propOverlay')?.remove();
+  document.getElementById('visitorsOverlay')?.remove();
+  document.getElementById('agentsOverlay')?.remove();
+
   if (state.loading) { root.innerHTML = `<div class="loading">Opening the register\u2026</div>`; return; }
   if (!state.token || !state.user) { root.innerHTML = renderLogin(); attachLoginHandlers(); return; }
 
@@ -99,6 +119,7 @@ function render(){
         <button data-view="signin" class="${state.view==='signin'?'active':''}">New Sign-In</button>
         <button data-view="dashboard" class="${state.view==='dashboard'?'active':''}">Dashboard</button>
         ${state.user.role==='admin' ? `<button data-view="users" class="${state.view==='users'?'active':''}">Manage Users</button>` : ''}
+        <button data-view="properties" class="${state.view==='properties'?'active':''}">Properties</button>
       </div>
       <div class="who">
         <span>${escapeHtml(state.user.name)} \u00b7 ${state.user.role}</span>
@@ -109,13 +130,18 @@ function render(){
     ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
   `;
 
-  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { state.view = b.dataset.view; render(); });
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+    if (b.dataset.view === 'signin' && signInDone) signInDone = null; // landing on Sign-In always gives a fresh form, never a stale thank-you screen
+    state.view = b.dataset.view;
+    render();
+  });
   document.getElementById('logoutBtn').onclick = logout;
 
   const main = document.getElementById('main');
   if (state.view === 'signin') { main.innerHTML = renderSignIn(); attachSignInHandlers(); }
   else if (state.view === 'dashboard') { main.innerHTML = renderDashboard(); attachDashboardHandlers(); }
   else if (state.view === 'users') { main.innerHTML = renderUsers(); attachUsersHandlers(); }
+  else if (state.view === 'properties') { main.innerHTML = renderProperties(); attachPropertiesHandlers(); }
 
   if (state.selectedClientId) {
     document.body.insertAdjacentHTML('beforeend', renderDrawer());
@@ -124,6 +150,14 @@ function render(){
   if (state.editingProperty) {
     document.body.insertAdjacentHTML('beforeend', renderPropertyModal());
     attachPropertyModalHandlers();
+  }
+  if (state.visitorsForPropertyId) {
+    document.body.insertAdjacentHTML('beforeend', renderVisitorsModal());
+    attachVisitorsModalHandlers();
+  }
+  if (state.agentsForPropertyId) {
+    document.body.insertAdjacentHTML('beforeend', renderAgentsModal());
+    attachAgentsModalHandlers();
   }
 }
 
@@ -167,22 +201,38 @@ function attachLoginHandlers(){
 }
 
 // ================= SIGN-IN =================
-let signInForm = { name:'', phone:'', email:'', property:'', budget:'', financing:'', timeline:'', source:'', consent:false, consentMarketing:false };
-let signInDone = null;
+let signInForm = {
+  name:'', phone:'', email:'', property:'', propertyId:null,
+  budgetFrom:'', budgetTo:'', financing:'', timeline:'',
+  source:[], sourceDetail:'', consent:false, consentMarketing:false,
+};
+let signInDone = null; // { name, listingUrl } while showing the thank-you screen
 
 function renderSignIn(){
   if (signInDone) {
     return `<div class="signin-wrap"><div class="deed thanks">
-      <div class="mark">Thank you, ${escapeHtml(signInDone)}.</div>
-      <p style="color:var(--ink-light)">You're on the register. An agent will be in touch shortly.</p>
+      <div class="mark">Thank you, ${escapeHtml(signInDone.name)}!</div>
+      <p style="color:var(--ink-light)">Enjoy your tour of the home. If you have any questions or would like price and feature sheets, an agent is nearby to help you.</p>
+      ${signInDone.listingUrl ? `<a class="btn brass" href="${escapeHtml(signInDone.listingUrl)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:14px;margin-right:10px;text-decoration:none">View Listing</a>` : ''}
+      <button class="btn secondary" id="signInAnotherBtn" style="margin-top:14px">Sign in another guest</button>
     </div></div>`;
   }
-  if (signInForm.property === '' && state.viewing.property) signInForm.property = state.viewing.property;
+  signInForm.property = state.viewing.property || '';
+  signInForm.propertyId = state.viewing.propertyId || null;
 
   const radioGroup = (name, options, current) => options.map(opt => `
     <label class="opt ${current===opt?'selected':''}" data-group="${name}" data-value="${escapeHtml(opt)}">
-      <input type="radio" name="${name}" ${current===opt?'checked':''} style="display:none"/>${escapeHtml(opt)}
+      <input type="radio" class="opt-input" name="${name}" ${current===opt?'checked':''} style="display:none"/>${escapeHtml(opt)}
     </label>`).join('');
+
+  const sourceGroup = SOURCE.map((opt, i) => `
+    <label class="opt ${signInForm.source.includes(opt)?'selected':''}" data-source="${escapeHtml(opt)}">
+      <input type="checkbox" id="src_${i}" ${signInForm.source.includes(opt)?'checked':''} style="display:none"/>${escapeHtml(opt)}
+    </label>`).join('');
+
+  const isReferral = signInForm.source.includes('Referral');
+  const detailLabel = isReferral ? 'Referred by who?' : 'Notes';
+  const detailPlaceholder = isReferral ? "The name of the person who referred you" : 'Anything else you\u2019d like us to know (optional)';
 
   return `
     <div class="signin-wrap">
@@ -206,13 +256,26 @@ function renderSignIn(){
             <input type="email" id="si_email" value="${escapeHtml(signInForm.email)}" placeholder="jane@example.com"></div>
         </div>
         <div class="field"><label>Property / unit you're viewing</label>
-          <input type="text" id="si_property" value="${escapeHtml(signInForm.property)}" placeholder="e.g. 12 Vineyard Close, Unit 4B"></div>
+          <input type="text" id="si_property" value="${escapeHtml(signInForm.property)}" placeholder="Set via \"Change property\" above" readonly></div>
+
         <div class="field"><label>Approximate budget</label>
-          <input type="text" id="si_budget" value="${escapeHtml(signInForm.budget)}" placeholder="e.g. R1.8m \u2013 R2.2m"></div>
+          <div class="grid2">
+            <div class="currency-field">
+              <span class="currency-prefix">${CURRENCY}</span>
+              <input type="text" inputmode="numeric" id="si_budgetFrom" value="${escapeHtml(formatThousands(signInForm.budgetFrom))}" placeholder="From, e.g. 1,800,000">
+            </div>
+            <div class="currency-field">
+              <span class="currency-prefix">${CURRENCY}</span>
+              <input type="text" inputmode="numeric" id="si_budgetTo" value="${escapeHtml(formatThousands(signInForm.budgetTo))}" placeholder="To (optional)">
+            </div>
+          </div>
+        </div>
 
         <div class="field"><label>Financing</label><div class="radio-row" id="si_financing">${radioGroup('financing', FINANCING, signInForm.financing)}</div></div>
         <div class="field"><label>Buying timeline</label><div class="radio-row" id="si_timeline">${radioGroup('timeline', TIMELINE, signInForm.timeline)}</div></div>
-        <div class="field"><label>How did you hear about this viewing?</label><div class="radio-row" id="si_source">${radioGroup('source', SOURCE, signInForm.source)}</div></div>
+        <div class="field"><label>How did you hear about this viewing/us?</label><div class="radio-row" id="si_source">${sourceGroup}</div></div>
+        <div class="field"><label>${detailLabel}</label>
+          <input type="text" id="si_sourceDetail" value="${escapeHtml(signInForm.sourceDetail)}" placeholder="${escapeHtml(detailPlaceholder)}"></div>
 
         <div class="consent-box">
           <input type="checkbox" id="si_consent" ${signInForm.consent?'checked':''} required>
@@ -236,36 +299,83 @@ function renderSignIn(){
 }
 
 function attachSignInHandlers(){
+  if (signInDone) {
+    // thank-you screen: only this button exists, nothing else to bind
+    const backBtn = document.getElementById('signInAnotherBtn');
+    if (backBtn) backBtn.onclick = () => { signInDone = null; render(); };
+    return;
+  }
+
   document.getElementById('changePropertyBtn').onclick = () => { state.editingProperty = true; render(); };
 
-  document.querySelectorAll('#signInForm .opt').forEach(el => {
-    el.onclick = () => {
-      const group = el.dataset.group;
-      const key = group === 'financing' ? 'financing' : group === 'timeline' ? 'timeline' : 'source';
-      signInForm[key] = el.dataset.value;
+  document.querySelectorAll('#signInForm .opt[data-group] .opt-input').forEach(input => {
+    input.onchange = () => {
+      const label = input.closest('.opt');
+      signInForm[label.dataset.group] = label.dataset.value;
       render();
     };
   });
 
+  document.querySelectorAll('#signInForm .opt[data-source] input').forEach(input => {
+    input.onchange = () => {
+      const label = input.closest('.opt');
+      const val = label.dataset.source;
+      const i = signInForm.source.indexOf(val);
+      if (input.checked) { if (i === -1) signInForm.source.push(val); }
+      else { if (i !== -1) signInForm.source.splice(i, 1); }
+      render(); // re-render so the Referred-by/Notes label updates immediately
+    };
+  });
+
   const f = document.getElementById('signInForm');
-  ['name','phone','email','property','budget'].forEach(key => {
+  ['name','phone','email','sourceDetail'].forEach(key => {
     document.getElementById('si_' + key).oninput = e => { signInForm[key] = e.target.value; };
   });
+
+  ['budgetFrom','budgetTo'].forEach(key => {
+    const el = document.getElementById('si_' + key);
+    el.oninput = e => {
+      const digits = digitsOnly(e.target.value);
+      signInForm[key] = digits;
+      e.target.value = formatThousands(digits); // live thousands-formatting as they type
+    };
+  });
+
   document.getElementById('si_consent').onchange = e => { signInForm.consent = e.target.checked; };
   document.getElementById('si_consentMarketing').onchange = e => { signInForm.consentMarketing = e.target.checked; };
 
   f.onsubmit = async (e) => {
     e.preventDefault();
     if (!signInForm.name.trim() || !signInForm.phone.trim() || !signInForm.consent) return;
+
+    const budgetParts = [];
+    if (signInForm.budgetFrom) budgetParts.push(`${CURRENCY} ${formatThousands(signInForm.budgetFrom)}`);
+    if (signInForm.budgetTo) budgetParts.push(`${CURRENCY} ${formatThousands(signInForm.budgetTo)}`);
+    const budget = budgetParts.length === 2 ? budgetParts.join(' \u2013 ') : (budgetParts[0] || '');
+
     try {
-      const { client } = await api('/clients', { method:'POST', body: { ...signInForm, viewingDate: new Date().toISOString().slice(0,10) } });
+      const { client } = await api('/clients', {
+        method:'POST',
+        body: {
+          name: signInForm.name, phone: signInForm.phone, email: signInForm.email,
+          property: signInForm.property, propertyId: signInForm.propertyId,
+          budget, financing: signInForm.financing, timeline: signInForm.timeline,
+          source: signInForm.source, sourceDetail: signInForm.sourceDetail,
+          consent: signInForm.consent, consentMarketing: signInForm.consentMarketing,
+          viewingDate: new Date().toISOString().slice(0,10),
+        },
+      });
       state.clients.unshift(client);
-      signInDone = signInForm.name;
+      signInDone = { name: signInForm.name, listingUrl: state.viewing.listingUrl };
       const firstName = signInForm.name;
-      signInForm = { name:'', phone:'', email:'', property: state.viewing.property, budget:'', financing:'', timeline:'', source:'', consent:false, consentMarketing:false };
+      signInForm = {
+        name:'', phone:'', email:'', property: state.viewing.property, propertyId: state.viewing.propertyId,
+        budgetFrom:'', budgetTo:'', financing:'', timeline:'', source:[], sourceDetail:'',
+        consent:false, consentMarketing:false,
+      };
       render();
       showToast('Saved \u2013 welcome, ' + firstName.split(' ')[0]);
-      setTimeout(() => { signInDone = null; render(); }, 1800);
+      setTimeout(() => { signInDone = null; render(); }, 4000);
     } catch (err) {
       showToast(err.message);
     }
@@ -274,17 +384,22 @@ function attachSignInHandlers(){
 
 // ================= PROPERTY MODAL =================
 function renderPropertyModal(){
-  const recent = state.viewing.recent || [];
+  const recent = state.viewing.recent || []; // [{id, name, listing_url}]
+  const allProps = state.properties || [];
   return `
     <div class="overlay center" id="propOverlay">
       <div class="property-modal">
         <h3>Set the property being viewed</h3>
-        <p class="hint">This pre-fills the sign-in form for everyone at this viewing.</p>
+        <p class="hint">Pick an existing property, or type a new one to add it on the fly \u2014 this pre-fills the sign-in form for everyone at this viewing.</p>
         <div class="field" style="margin-bottom:0">
           <label>Property / unit</label>
-          <input type="text" id="propInput" autofocus value="${escapeHtml(state.viewing.property || '')}" placeholder="e.g. 12 Vineyard Close, Unit 4B">
+          <input type="text" id="propInput" autofocus list="propList" value="${escapeHtml(state.viewing.property || '')}" placeholder="e.g. 12 Vineyard Close, Unit 4B">
+          <datalist id="propList">
+            ${allProps.map(p => `<option value="${escapeHtml(p.name)}">`).join('')}
+          </datalist>
         </div>
-        ${recent.length ? `<div class="recent-chips">${recent.map(p => `<button type="button" data-p="${escapeHtml(p)}">${escapeHtml(p)}</button>`).join('')}</div>` : ''}
+        ${recent.length ? `<div class="recent-chips">${recent.map(p => `<button type="button" data-p="${escapeHtml(p.name)}">${escapeHtml(p.name)}</button>`).join('')}</div>` : ''}
+        <p class="hint" style="margin:12px 0 0">Need to add an address or listing link? Do that from the <strong>Properties</strong> tab afterwards.</p>
         <div class="modal-actions">
           ${state.viewing.property ? `<button class="btn secondary" id="propCancel">Cancel</button>` : ''}
           <button class="btn brass" id="propSave">Save & Continue</button>
@@ -300,15 +415,19 @@ function attachPropertyModalHandlers(){
   document.querySelectorAll('.recent-chips button').forEach(b => b.onclick = () => { input.value = b.dataset.p; });
   const cancelBtn = document.getElementById('propCancel');
   if (cancelBtn) cancelBtn.onclick = () => { state.editingProperty = false; render(); };
+
   document.getElementById('propSave').onclick = async () => {
     const val = input.value.trim();
     if (!val) return;
+    const match = (state.properties || []).find(p => p.name.toLowerCase() === val.toLowerCase());
+    const body = match ? { propertyId: match.id } : { propertyName: val };
     try {
-      const res = await api('/viewing/current', { method:'POST', body:{ property: val } });
-      state.viewing.property = res.property;
-      const viewingRes = await api('/viewing/current');
+      await api('/viewing/current', { method:'POST', body });
+      const [viewingRes, propertiesRes] = await Promise.all([api('/viewing/current'), api('/properties')]);
       state.viewing = viewingRes;
-      signInForm.property = val;
+      state.properties = propertiesRes.properties;
+      signInForm.property = viewingRes.property;
+      signInForm.propertyId = viewingRes.propertyId;
       state.editingProperty = false;
       render();
     } catch (err) { showToast(err.message); }
@@ -375,11 +494,26 @@ function attachDashboardHandlers(){
   document.getElementById('dashSearch').oninput = e => { dashQuery = e.target.value; render(); };
   document.getElementById('dashStatus').onchange = e => { dashStatus = e.target.value; render(); };
   document.querySelectorAll('.client-card').forEach(el => {
-    el.onclick = () => { state.selectedClientId = Number(el.dataset.id); render(); };
+    el.onclick = () => {
+      const id = Number(el.dataset.id);
+      state.selectedClientId = id;
+      render();
+      loadClientHistory(id);
+    };
   });
   // NOTE: CSV export uses a query-string token here for simplicity of a plain <a> download link.
   // In production, prefer a short-lived signed download URL instead of the JWT in the querystring
   // (see README security notes).
+}
+
+async function loadClientHistory(id){
+  try {
+    const { history } = await api(`/clients/${id}/history`);
+    state.historyCache[id] = history;
+    if (state.selectedClientId === id) render();
+  } catch (err) {
+    // non-critical — the drawer just keeps showing "Loading history..."
+  }
 }
 
 // ================= CLIENT DETAIL DRAWER =================
@@ -388,6 +522,9 @@ let noteDraft = '';
 function renderDrawer(){
   const c = state.clients.find(x => x.id === state.selectedClientId);
   if (!c) return '';
+  const history = state.historyCache[c.id];
+  const isReferral = (c.source || '').includes('Referral');
+
   return `
     <div class="overlay" id="drawerOverlay">
       <div class="drawer">
@@ -399,15 +536,29 @@ function renderDrawer(){
         <dl class="kv">
           <dt>Phone</dt><dd>${escapeHtml(c.phone || '\u2014')}</dd>
           <dt>Email</dt><dd>${escapeHtml(c.email || '\u2014')}</dd>
-          <dt>Property</dt><dd>${escapeHtml(c.property || '\u2014')}</dd>
+          <dt>Property</dt><dd>${escapeHtml(c.property || '\u2014')}${c.property_listing_url ? ` \u00b7 <a href="${escapeHtml(c.property_listing_url)}" target="_blank" rel="noopener noreferrer">View Listing</a>` : ''}</dd>
           <dt>Budget</dt><dd>${escapeHtml(c.budget || '\u2014')}</dd>
           <dt>Financing</dt><dd>${escapeHtml(c.financing || '\u2014')}</dd>
           <dt>Timeline</dt><dd>${escapeHtml(c.timeline || '\u2014')}</dd>
           <dt>Source</dt><dd>${escapeHtml(c.source || '\u2014')}</dd>
+          <dt>${isReferral ? 'Referred by' : 'Notes'}</dt><dd>${escapeHtml(c.source_detail || '\u2014')}</dd>
           <dt>Signed in</dt><dd>${fmtDate(c.created_at)}</dd>
           <dt>Marketing OK</dt><dd>${c.consent_marketing ? 'Yes \u2013 opted in' : 'No'}</dd>
         </dl>
-        <label style="margin-bottom:8px">Update status</label>
+
+        <label style="margin-bottom:8px">Viewing history</label>
+        <div class="notes-list">
+          ${history === undefined ? `<div style="font-size:13px;color:var(--ink-light)">Loading history\u2026</div>` :
+            history.length <= 1 ? `<div style="font-size:13px;color:var(--ink-light)">No other viewings on record for this phone number.</div>` :
+            history.map(h => `
+              <div class="note">
+                <div class="when">${fmtWhen(h.created_at)}${h.id===c.id ? ' \u00b7 this sign-in' : ''}</div>
+                ${escapeHtml(h.property || 'Property not recorded')}${h.property_listing_url ? ` \u00b7 <a href="${escapeHtml(h.property_listing_url)}" target="_blank" rel="noopener noreferrer">View Listing</a>` : ''}
+              </div>
+            `).join('')}
+        </div>
+
+        <label style="margin-bottom:8px;margin-top:16px">Update status</label>
         <div class="status-row">
           ${STATUSES.map(s => `<button data-status="${s.k}" class="${c.status===s.k?'active':''}">${s.label}</button>`).join('')}
         </div>
@@ -482,7 +633,8 @@ function renderUsers(){
           <div class="user-actions">
             <span class="chip role-${u.role}">${u.role}</span>
             <span class="chip ${u.is_active ? 'won' : 'lost'}">${u.is_active ? 'active' : 'disabled'}</span>
-            ${u.id!==state.user.id ? `<button class="btn secondary" data-toggle="${u.id}" data-active="${u.is_active}" style="padding:6px 12px;font-size:12px">${u.is_active?'Disable':'Enable'}</button>
+            <button class="btn secondary" data-reset-pw="${u.id}" style="padding:6px 12px;font-size:12px">Reset password</button>
+            ${u.id!==state.user.id ? `<button class="btn secondary" data-toggle="${u.id}" data-active="${u.is_active ? 'true' : 'false'}" style="padding:6px 12px;font-size:12px">${u.is_active?'Disable':'Enable'}</button>
             <button class="danger-link" data-del="${u.id}">Delete</button>` : ''}
           </div>
         </div>
@@ -509,6 +661,17 @@ function renderUsers(){
 }
 
 function attachUsersHandlers(){
+  document.querySelectorAll('[data-reset-pw]').forEach(b => {
+    b.onclick = async () => {
+      const newPassword = prompt('Enter a new password for this user (at least 8 characters):');
+      if (newPassword === null) return; // cancelled
+      if (newPassword.length < 8) { showToast('Password must be at least 8 characters.'); return; }
+      try {
+        await api(`/users/${b.dataset.resetPw}`, { method:'PATCH', body:{ password: newPassword } });
+        showToast('Password reset.');
+      } catch (err) { showToast(err.message); }
+    };
+  });
   document.querySelectorAll('[data-toggle]').forEach(b => {
     b.onclick = async () => {
       const id = b.dataset.toggle;
@@ -546,6 +709,241 @@ function attachUsersHandlers(){
       showToast('User created');
     } catch (err) { showToast(err.message); }
   };
+}
+
+// ================= MANAGE PROPERTIES =================
+let newPropertyForm = { name:'', address:'', listingUrl:'' };
+let editingPropertyId = null;
+let editPropertyDraft = {};
+
+function renderProperties(){
+  return `
+    <div class="card" style="margin-bottom:20px">
+      ${state.properties.length === 0 ? `<div class="empty"><div class="mark">No properties yet</div><div>${state.user.role==='admin' ? 'Add one below, or set one from the sign-in screen\u2019s "Change property" button.' : 'You\u2019re not assigned to any properties yet \u2014 ask an admin to assign you one.'}</div></div>` :
+        state.properties.map(p => {
+          const isEditing = editingPropertyId === p.id;
+          if (isEditing) {
+            return `
+              <div class="user-row" data-editrow="${p.id}">
+                <div style="flex:1;min-width:220px;display:flex;flex-direction:column;gap:8px">
+                  <input type="text" id="ep_name" value="${escapeHtml(editPropertyDraft.name)}" placeholder="Property name">
+                  <input type="text" id="ep_address" value="${escapeHtml(editPropertyDraft.address)}" placeholder="Address (optional)">
+                  <input type="text" id="ep_listingUrl" value="${escapeHtml(editPropertyDraft.listingUrl)}" placeholder="Listing URL (optional)">
+                </div>
+                <div class="user-actions">
+                  <button class="btn brass" data-save-prop="${p.id}" style="padding:8px 14px;font-size:12.5px">Save</button>
+                  <button class="btn secondary" data-cancel-edit style="padding:8px 14px;font-size:12.5px">Cancel</button>
+                </div>
+              </div>
+            `;
+          }
+          return `
+            <div class="user-row">
+              <div>
+                <div class="u-name">${escapeHtml(p.name)}</div>
+                <div class="u-email">${escapeHtml(p.address || '')}</div>
+                ${p.listing_url ? `<a href="${escapeHtml(p.listing_url)}" target="_blank" rel="noopener noreferrer" style="font-size:12.5px">View Listing \u2197</a>` : ''}
+              </div>
+              <div class="user-actions">
+                <button class="btn secondary" data-visitors="${p.id}" style="padding:6px 12px;font-size:12px">Visitors</button>
+                ${state.user.role==='admin' ? `<button class="btn secondary" data-agents="${p.id}" style="padding:6px 12px;font-size:12px">Agents</button>` : ''}
+                <button class="btn secondary" data-edit-prop="${p.id}" style="padding:6px 12px;font-size:12px">Edit</button>
+                <button class="danger-link" data-del-prop="${p.id}">Delete</button>
+              </div>
+            </div>
+          `;
+        }).join('')}
+    </div>
+
+    <div class="card" style="padding:22px;max-width:460px">
+      <h3 style="font-family:var(--font-display);margin-top:0">Add a property</h3>
+      <form id="newPropertyForm">
+        <div class="field"><label>Name</label><input type="text" id="np_name" placeholder="e.g. 12 Vineyard Close, Unit 4B" required></div>
+        <div class="field"><label>Address (optional)</label><input type="text" id="np_address" placeholder="Street, suburb, city"></div>
+        <div class="field"><label>Listing URL (optional)</label><input type="text" id="np_listingUrl" placeholder="https://..."></div>
+        <button class="btn brass" type="submit">Add property</button>
+      </form>
+    </div>
+  `;
+}
+
+function attachPropertiesHandlers(){
+  document.getElementById('newPropertyForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const body = {
+      name: document.getElementById('np_name').value,
+      address: document.getElementById('np_address').value,
+      listingUrl: document.getElementById('np_listingUrl').value,
+    };
+    try {
+      await api('/properties', { method:'POST', body });
+      const { properties } = await api('/properties');
+      state.properties = properties;
+      render();
+      showToast('Property added');
+    } catch (err) { showToast(err.message); }
+  };
+
+  document.querySelectorAll('[data-edit-prop]').forEach(b => {
+    b.onclick = () => {
+      const p = state.properties.find(x => x.id == b.dataset.editProp);
+      editingPropertyId = p.id;
+      editPropertyDraft = { name: p.name, address: p.address || '', listingUrl: p.listing_url || '' };
+      render();
+    };
+  });
+  document.querySelectorAll('[data-cancel-edit]').forEach(b => {
+    b.onclick = () => { editingPropertyId = null; render(); };
+  });
+  document.querySelectorAll('[id^=ep_]').forEach(el => {
+    el.oninput = e => {
+      const key = el.id === 'ep_name' ? 'name' : el.id === 'ep_address' ? 'address' : 'listingUrl';
+      editPropertyDraft[key] = e.target.value;
+    };
+  });
+  document.querySelectorAll('[data-save-prop]').forEach(b => {
+    b.onclick = async () => {
+      try {
+        const { property } = await api(`/properties/${b.dataset.saveProp}`, { method:'PATCH', body: editPropertyDraft });
+        state.properties = state.properties.map(p => p.id === property.id ? property : p);
+        editingPropertyId = null;
+        render();
+      } catch (err) { showToast(err.message); }
+    };
+  });
+  document.querySelectorAll('[data-del-prop]').forEach(b => {
+    b.onclick = async () => {
+      if (!confirm('Delete this property? Past sign-ins for it are kept, just unlinked from a live listing.')) return;
+      try {
+        await api(`/properties/${b.dataset.delProp}`, { method:'DELETE' });
+        state.properties = state.properties.filter(p => p.id != b.dataset.delProp);
+        render();
+      } catch (err) { showToast(err.message); }
+    };
+  });
+  document.querySelectorAll('[data-visitors]').forEach(b => {
+    b.onclick = () => { visitorsData = null; state.visitorsForPropertyId = Number(b.dataset.visitors); render(); };
+  });
+  document.querySelectorAll('[data-agents]').forEach(b => {
+    b.onclick = () => { agentsData = null; state.agentsForPropertyId = Number(b.dataset.agents); render(); };
+  });
+}
+
+// ================= PROPERTY VISITORS REPORT =================
+let visitorsData = null; // { property, visitors } once loaded
+
+function renderVisitorsModal(){
+  const p = state.properties.find(x => x.id === state.visitorsForPropertyId);
+  return `
+    <div class="overlay center" id="visitorsOverlay">
+      <div class="property-modal" style="max-width:520px;max-height:80vh;overflow-y:auto">
+        <h3>Visitors \u2014 ${escapeHtml(p ? p.name : '')}</h3>
+        <div id="visitorsList">
+          ${visitorsData === null ? `<p class="hint">Loading\u2026</p>` :
+            visitorsData.visitors.length === 0 ? `<p class="hint">No sign-ins recorded for this property yet.</p>` :
+            visitorsData.visitors.map(v => `
+              <div class="note" style="margin-bottom:8px">
+                <div class="when">${fmtWhen(v.created_at)}</div>
+                <strong>${escapeHtml(v.name)}</strong> \u00b7 ${escapeHtml(v.phone)}
+                <span class="chip ${statusMeta(v.status).cls}" style="margin-left:6px">${statusMeta(v.status).label}</span>
+              </div>
+            `).join('')}
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" id="visitorsClose" style="width:100%">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function attachVisitorsModalHandlers(){
+  const overlay = document.getElementById('visitorsOverlay');
+  overlay.onclick = e => { if (e.target === overlay) { state.visitorsForPropertyId = null; visitorsData = null; render(); } };
+  document.getElementById('visitorsClose').onclick = () => { state.visitorsForPropertyId = null; visitorsData = null; render(); };
+
+  if (visitorsData === null) {
+    api(`/properties/${state.visitorsForPropertyId}/visitors`).then(data => {
+      visitorsData = data;
+      if (state.visitorsForPropertyId) render();
+    }).catch(err => showToast(err.message));
+  }
+}
+
+// ================= PROPERTY AGENT ASSIGNMENT (admin only) =================
+let agentsData = null; // { assigned, available } once loaded
+
+function renderAgentsModal(){
+  const p = state.properties.find(x => x.id === state.agentsForPropertyId);
+  return `
+    <div class="overlay center" id="agentsOverlay">
+      <div class="property-modal" style="max-width:480px;max-height:80vh;overflow-y:auto">
+        <h3>Assign agents \u2014 ${escapeHtml(p ? p.name : '')}</h3>
+        <p class="hint">Only assigned agents can see and use this property. Admins can always see every property.</p>
+        <div id="agentsList">
+          ${agentsData === null ? `<p class="hint">Loading\u2026</p>` : `
+            <label style="margin-bottom:8px">Assigned</label>
+            <div class="notes-list" style="margin-bottom:16px">
+              ${agentsData.assigned.length === 0 ? `<div style="font-size:13px;color:var(--ink-light)">No agents assigned yet.</div>` :
+                agentsData.assigned.map(a => `
+                  <div class="note" style="display:flex;justify-content:space-between;align-items:center">
+                    <span><strong>${escapeHtml(a.name)}</strong> \u00b7 ${escapeHtml(a.email)}</span>
+                    <button class="danger-link" data-unassign="${a.id}">Remove</button>
+                  </div>
+                `).join('')}
+            </div>
+            <label style="margin-bottom:8px">Available</label>
+            <div class="notes-list">
+              ${agentsData.available.length === 0 ? `<div style="font-size:13px;color:var(--ink-light)">No other agent logins to assign. Add agents from the Manage Users tab first.</div>` :
+                agentsData.available.map(a => `
+                  <div class="note" style="display:flex;justify-content:space-between;align-items:center">
+                    <span><strong>${escapeHtml(a.name)}</strong> \u00b7 ${escapeHtml(a.email)}</span>
+                    <button class="btn secondary" data-assign="${a.id}" style="padding:5px 10px;font-size:12px">Assign</button>
+                  </div>
+                `).join('')}
+            </div>
+          `}
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" id="agentsClose" style="width:100%">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function attachAgentsModalHandlers(){
+  const overlay = document.getElementById('agentsOverlay');
+  const propId = state.agentsForPropertyId;
+  overlay.onclick = e => { if (e.target === overlay) { state.agentsForPropertyId = null; agentsData = null; render(); } };
+  document.getElementById('agentsClose').onclick = () => { state.agentsForPropertyId = null; agentsData = null; render(); };
+
+  if (agentsData === null) {
+    api(`/properties/${propId}/agents`).then(data => {
+      agentsData = data;
+      if (state.agentsForPropertyId) render();
+    }).catch(err => showToast(err.message));
+    return; // handlers below need agentsData to exist — next render() call will attach them
+  }
+
+  document.querySelectorAll('[data-assign]').forEach(b => {
+    b.onclick = async () => {
+      try {
+        await api(`/properties/${propId}/agents`, { method:'POST', body:{ userId: Number(b.dataset.assign) } });
+        agentsData = null;
+        render();
+      } catch (err) { showToast(err.message); }
+    };
+  });
+  document.querySelectorAll('[data-unassign]').forEach(b => {
+    b.onclick = async () => {
+      try {
+        await api(`/properties/${propId}/agents/${b.dataset.unassign}`, { method:'DELETE' });
+        agentsData = null;
+        render();
+      } catch (err) { showToast(err.message); }
+    };
+  });
 }
 
 bootstrap();

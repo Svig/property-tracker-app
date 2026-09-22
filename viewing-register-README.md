@@ -172,6 +172,88 @@ All endpoints except `/api/auth/login` require `Authorization: Bearer <token>`.
 
 ---
 
+## Changelog — bug fix + new features (this round)
+
+**Bug fix:** the "Save & Continue" / client-detail popups weren't closing.
+Root cause: `public/app.js` appends modals directly to `<body>` (so they can
+overlay everything), but nothing ever removed the old one when it closed —
+each open silently stacked a new copy on an invisible leftover. Fixed in
+`render()`: any existing modal is now removed at the start of every
+re-render, before deciding whether a fresh one is needed. No more full
+page refresh needed.
+
+**Sign-in form changes:**
+- Approximate budget is now two currency-prefixed inputs (from/to) with
+  live thousands-formatting, instead of free text.
+- "How did you hear about this viewing?" is now multi-select, and reads
+  "...this viewing/us?"
+- A freehand field follows it, labelled "Referred by who?" when Referral
+  is selected, otherwise "Notes" — stored as `source_detail`.
+- Confirmation message updated to: *"Thank you, `<name>`! Enjoy your tour
+  of the home. If you have any questions or would like price and feature
+  sheets, an agent is nearby to help you."* — plus a "View Listing" button
+  if the current property has a listing URL.
+
+**Properties are now a managed, first-class thing**, not just a text
+label:
+- A new **Properties** tab (any logged-in user) to add/edit/delete
+  properties with name, address, and listing URL.
+- The "change property" screen now picks from your saved properties (with
+  autocomplete) or quick-adds a new one by name on the fly.
+- Every sign-in links to a property (`property_id`), so "View Listing"
+  (opens in a new tab) can show up anywhere that property is referenced.
+- Each property has a **Visitors** report — everyone who's signed in for
+  it, most recent first.
+- Each client's detail view shows their **viewing history** — every
+  property they've signed in for and when, matched by phone number within
+  the tenant. This is a phone-number match, not a formal merged "person"
+  record — a typo'd number won't link up. Worth knowing if you want a
+  stricter identity model later (dedupe on save, a manual "merge" action,
+  etc.) — flag it if that's worth building next.
+
+**Migrating an existing local database:** don't re-run `init.mariadb.sql`
+or `init.postgres.sql` against a database you already set up — it'll try
+to recreate tables that exist. Instead run the matching migration script
+in `database/migrate_002_properties.*.sql`, which adds the new tables and
+columns and backfills a Property row for every property name already in
+your data. A fresh install just uses the (now-updated) init scripts as
+before.
+
+---
+
+## Keeping this codebase up to date as it evolves
+
+The easiest workflow from here: put this folder under git locally, and
+from then on I can give you either full updated files (as this
+conversation has been doing) or you can ask me to describe changes as a
+diff — either way, `git diff` after copying updated files over shows you
+exactly what changed, and `git log` gives you a real history instead of a
+pile of zip files.
+
+```bash
+cd property-tracker-app
+git init
+git add .
+git commit -m "Initial version"
+```
+
+Next time you get an updated zip from me: extract it over the existing
+folder (your `.env` and `node_modules` aren't in the zip, so they're
+untouched), then `git status` / `git diff` shows precisely what changed
+before you commit it.
+
+**Honest recommendation given how this session went:** a chat interface
+is a genuinely awkward way to iterate on a real, multi-file codebase —
+every round trip means re-explaining context, re-pasting file content,
+and me re-testing things from scratch in a throwaway container each time
+(which is exactly why this session needed several rounds of "the
+container reset, let me reinstall MariaDB again"). Claude Code works
+directly in your actual project folder on your machine: it keeps the real
+git history, runs your real dev server, and can act on the codebase
+directly rather than through file uploads/downloads each round. For
+ongoing work on this app specifically, it would substantially cut the
+overhead you're feeling right now.
+
 ## Multi-tenancy & rebranding — where this stands now
 
 You asked for `tenant_id` to be added now so coming back to multi-tenant

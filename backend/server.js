@@ -7,6 +7,7 @@ const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/users.routes');
 const clientRoutes = require('./routes/clients.routes');
 const viewingRoutes = require('./routes/viewing.routes');
+const propertiesRoutes = require('./routes/properties.routes');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -18,6 +19,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/clients', clientRoutes);
 app.use('/api/viewing', viewingRoutes);
+app.use('/api/properties', propertiesRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 

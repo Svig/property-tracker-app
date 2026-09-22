@@ -57,7 +57,33 @@ CREATE TABLE IF NOT EXISTS users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
+-- properties — the actual listings/units your agents show.
+-- Linking a sign-in to a property (rather than a free-text label)
+-- is what makes "who viewed this property" and "which properties has
+-- this person viewed" answerable later.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS properties (
+  id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id     INT UNSIGNED  NOT NULL,
+  name          VARCHAR(255)  NOT NULL,
+  address       VARCHAR(500)  NULL,
+  listing_url   VARCHAR(1000) NULL,
+  created_by    INT UNSIGNED  NULL,
+  created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_properties_tenant (tenant_id),
+  CONSTRAINT fk_properties_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_properties_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
 -- clients — captured leads / viewing sign-ins
+-- property_id links this sign-in to a managed property (nullable —
+-- older/ad-hoc rows may only have the free-text `property` label).
+-- source can hold multiple comma-separated selections now that "how
+-- did you hear about this viewing" is multi-select, hence VARCHAR(255)
+-- instead of the original VARCHAR(60). source_detail carries the
+-- freehand follow-up (who referred them, or general notes).
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS clients (
   id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -66,10 +92,12 @@ CREATE TABLE IF NOT EXISTS clients (
   phone               VARCHAR(40)   NOT NULL,
   email               VARCHAR(190)  NULL,
   property            VARCHAR(255)  NULL,
+  property_id         INT UNSIGNED  NULL,
   budget              VARCHAR(80)   NULL,
   financing           VARCHAR(60)   NULL,
   timeline            VARCHAR(60)   NULL,
-  source              VARCHAR(60)   NULL,
+  source              VARCHAR(255)  NULL,
+  source_detail       VARCHAR(255)  NULL,
   status              ENUM('new','contacted','scheduled','offer','won','lost') NOT NULL DEFAULT 'new',
   consent             TINYINT(1)    NOT NULL DEFAULT 0,
   consent_marketing   TINYINT(1)    NOT NULL DEFAULT 0,
@@ -81,8 +109,11 @@ CREATE TABLE IF NOT EXISTS clients (
   KEY idx_clients_tenant_status (tenant_id, status),
   KEY idx_clients_created_at (created_at),
   KEY idx_clients_name (name),
+  KEY idx_clients_property (property_id),
+  KEY idx_clients_tenant_phone (tenant_id, phone),
   CONSTRAINT fk_clients_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
-  CONSTRAINT fk_clients_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+  CONSTRAINT fk_clients_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_clients_property FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
@@ -107,30 +138,61 @@ CREATE TABLE IF NOT EXISTS client_notes (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
--- current_viewing — the property currently being shown.
--- One row per tenant (tenant_id is now the primary key, replacing
--- the old fixed-id=1 singleton design).
+-- property_agents — which agents can see/use which properties.
+-- Many-to-many: an agent can be assigned to multiple properties, a
+-- property can have multiple assigned agents. Admins bypass this table
+-- entirely (they see every property in their tenant); this table only
+-- gates visibility for the 'agent' role. Managed from the Properties
+-- screen by an admin.
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS current_viewing (
-  tenant_id   INT UNSIGNED PRIMARY KEY,
-  property    VARCHAR(255) NULL,
-  updated_by  INT UNSIGNED NULL,
-  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT fk_viewing_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
-  CONSTRAINT fk_viewing_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+CREATE TABLE IF NOT EXISTS property_agents (
+  id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id     INT UNSIGNED NOT NULL,
+  property_id   INT UNSIGNED NOT NULL,
+  user_id       INT UNSIGNED NOT NULL,
+  assigned_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_property_agent (property_id, user_id),
+  KEY idx_property_agents_tenant (tenant_id),
+  KEY idx_property_agents_user (user_id),
+  CONSTRAINT fk_pa_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_pa_property FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE,
+  CONSTRAINT fk_pa_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
--- recent_properties — small rolling list for quick reselection
+-- current_viewing — the property currently being shown.
+-- One row per USER, not per tenant: now that agents only see their
+-- assigned properties, a single shared tenant-wide "now viewing" would
+-- let an agent get stuck pointing at a property they can't access.
+-- Each agent (and each admin) tracks their own.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS current_viewing (
+  user_id     INT UNSIGNED PRIMARY KEY,
+  tenant_id   INT UNSIGNED NOT NULL,
+  property    VARCHAR(255) NULL,
+  property_id INT UNSIGNED NULL,
+  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_viewing_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_viewing_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_viewing_property FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- recent_properties — small rolling list of recently-used managed
+-- properties for quick-pick chips. Per user, same reasoning as above.
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS recent_properties (
-  id        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  tenant_id INT UNSIGNED NOT NULL,
-  property  VARCHAR(255) NOT NULL,
-  used_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id   INT UNSIGNED NOT NULL,
+  user_id     INT UNSIGNED NOT NULL,
+  property_id INT UNSIGNED NOT NULL,
+  used_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_recent_tenant (tenant_id),
+  KEY idx_recent_user (user_id),
   KEY idx_recent_used_at (used_at),
-  CONSTRAINT fk_recent_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+  CONSTRAINT fk_recent_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_recent_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_recent_property FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
@@ -142,8 +204,6 @@ CREATE TABLE IF NOT EXISTS recent_properties (
 INSERT IGNORE INTO tenants (id, name, slug, app_name)
 VALUES (1, 'Default', 'default', 'Viewing Register');
 
-INSERT IGNORE INTO current_viewing (tenant_id, property) VALUES (1, NULL);
-
 INSERT IGNORE INTO users (id, tenant_id, name, email, password_hash, role)
 VALUES (
   1,
@@ -153,3 +213,5 @@ VALUES (
   '$2b$10$haTEt1tfs3Imttd5lNuqEecAlyC97.pfy538PsmhWmQNoEBMbJYZ6',
   'admin'
 );
+
+INSERT IGNORE INTO current_viewing (user_id, tenant_id, property) VALUES (1, 1, NULL);

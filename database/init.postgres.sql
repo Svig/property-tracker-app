@@ -48,7 +48,25 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
 
 -- ------------------------------------------------------------
--- clients
+-- properties — the actual listings/units your agents show
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS properties (
+  id            SERIAL PRIMARY KEY,
+  tenant_id     INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name          VARCHAR(255) NOT NULL,
+  address       VARCHAR(500),
+  listing_url   VARCHAR(1000),
+  created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_properties_tenant ON properties(tenant_id);
+
+-- ------------------------------------------------------------
+-- clients — source is now VARCHAR(255) to hold multiple comma-joined
+-- selections (multi-select "how did you hear about this viewing/us?"),
+-- source_detail holds the freehand follow-up, property_id links to a
+-- managed property.
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS clients (
   id                  SERIAL PRIMARY KEY,
@@ -57,10 +75,12 @@ CREATE TABLE IF NOT EXISTS clients (
   phone               VARCHAR(40)    NOT NULL,
   email               VARCHAR(190),
   property            VARCHAR(255),
+  property_id         INTEGER REFERENCES properties(id) ON DELETE SET NULL,
   budget              VARCHAR(80),
   financing           VARCHAR(60),
   timeline            VARCHAR(60),
-  source              VARCHAR(60),
+  source              VARCHAR(255),
+  source_detail       VARCHAR(255),
   status              client_status  NOT NULL DEFAULT 'new',
   consent             BOOLEAN        NOT NULL DEFAULT FALSE,
   consent_marketing   BOOLEAN        NOT NULL DEFAULT FALSE,
@@ -73,6 +93,8 @@ CREATE INDEX IF NOT EXISTS idx_clients_tenant ON clients(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_clients_tenant_status ON clients(tenant_id, status);
 CREATE INDEX IF NOT EXISTS idx_clients_created_at ON clients(created_at);
 CREATE INDEX IF NOT EXISTS idx_clients_name ON clients(name);
+CREATE INDEX IF NOT EXISTS idx_clients_property ON clients(property_id);
+CREATE INDEX IF NOT EXISTS idx_clients_tenant_phone ON clients(tenant_id, phone);
 
 -- ------------------------------------------------------------
 -- client_notes — tenant_id denormalized here too (see mariadb notes)
@@ -89,25 +111,46 @@ CREATE INDEX IF NOT EXISTS idx_notes_tenant ON client_notes(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_notes_client ON client_notes(client_id);
 
 -- ------------------------------------------------------------
--- current_viewing — one row per tenant (tenant_id is the PK)
+-- property_agents — many-to-many visibility gate for the 'agent' role.
+-- Admins bypass this (they see every property); agents only see
+-- properties they're assigned to. Managed from the Properties screen.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS property_agents (
+  id            SERIAL PRIMARY KEY,
+  tenant_id     INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  property_id   INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  assigned_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+  UNIQUE (property_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_property_agents_tenant ON property_agents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_property_agents_user ON property_agents(user_id);
+
+-- ------------------------------------------------------------
+-- current_viewing — one row per USER, not per tenant (see mariadb
+-- schema notes for why: a shared tenant-wide value would strand an
+-- agent on a property they're no longer assigned to).
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS current_viewing (
-  tenant_id   INTEGER PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id     INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  tenant_id   INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   property    VARCHAR(255),
-  updated_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  property_id INTEGER REFERENCES properties(id) ON DELETE SET NULL,
   updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 -- ------------------------------------------------------------
--- recent_properties
+-- recent_properties — rolling list of recently-used properties, per user
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS recent_properties (
-  id        SERIAL PRIMARY KEY,
-  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  property  VARCHAR(255) NOT NULL,
-  used_at   TIMESTAMP NOT NULL DEFAULT NOW()
+  id          SERIAL PRIMARY KEY,
+  tenant_id   INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+  used_at     TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_recent_tenant ON recent_properties(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_recent_user ON recent_properties(user_id);
 CREATE INDEX IF NOT EXISTS idx_recent_used_at ON recent_properties(used_at);
 
 -- ------------------------------------------------------------
@@ -120,9 +163,6 @@ INSERT INTO tenants (id, name, slug, app_name)
 VALUES (1, 'Default', 'default', 'Viewing Register')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO current_viewing (tenant_id, property) VALUES (1, NULL)
-  ON CONFLICT (tenant_id) DO NOTHING;
-
 INSERT INTO users (id, tenant_id, name, email, password_hash, role)
 VALUES (
   1,
@@ -133,6 +173,9 @@ VALUES (
   'admin'
 )
 ON CONFLICT (tenant_id, email) DO NOTHING;
+
+INSERT INTO current_viewing (user_id, tenant_id, property) VALUES (1, 1, NULL)
+  ON CONFLICT (user_id) DO NOTHING;
 
 SELECT setval('tenants_id_seq', (SELECT MAX(id) FROM tenants));
 SELECT setval('users_id_seq', (SELECT MAX(id) FROM users));

@@ -50,19 +50,9 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json({ user });
 });
 
-// POST /api/auth/change-password  { currentPassword, newPassword }
-router.post('/change-password', requireAuth, async (req, res) => {
-  const { currentPassword, newPassword } = req.body || {};
-  if (!currentPassword || !newPassword || newPassword.length < 8) {
-    return res.status(400).json({ error: 'New password must be at least 8 characters.' });
-  }
-  const user = await db.getOne('SELECT id, password_hash FROM users WHERE id = ? AND tenant_id = ?', [req.user.id, req.user.tenant_id]);
-  const valid = await bcrypt.compare(currentPassword, user.password_hash);
-  if (!valid) return res.status(401).json({ error: 'Current password is incorrect.' });
-
-  const newHash = await bcrypt.hash(newPassword, 10);
-  await db.query('UPDATE users SET password_hash = ? WHERE id = ? AND tenant_id = ?', [newHash, req.user.id, req.user.tenant_id]);
-  res.json({ ok: true });
-});
+// Password changes are admin-only in this app (see PATCH /api/users/:id in
+// users.routes.js) — there is deliberately no self-service change-password
+// endpoint here. An agent who needs a new password asks an admin to reset
+// it from the Manage Users screen.
 
 module.exports = router;

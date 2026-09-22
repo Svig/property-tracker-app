@@ -45,19 +45,23 @@ router.post('/', async (req, res) => {
   res.status(201).json({ id: insertedId, name, email, role: finalRole });
 });
 
-// PATCH /api/users/:id — update role or active status (admin only, same tenant only)
+// PATCH /api/users/:id — update role, active status, or reset a password (admin only, same tenant only)
 router.patch('/:id', async (req, res) => {
   const { id } = req.params;
-  const { role, is_active } = req.body || {};
+  const { role, is_active, password } = req.body || {};
 
   if (Number(id) === req.user.id && (role === 'agent' || is_active === false)) {
     return res.status(400).json({ error: "You can't demote or deactivate your own account." });
+  }
+  if (password && password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters.' });
   }
 
   const fields = [];
   const params = [];
   if (role === 'admin' || role === 'agent') { fields.push('role = ?'); params.push(role); }
   if (typeof is_active === 'boolean') { fields.push('is_active = ?'); params.push(is_active); }
+  if (password) { fields.push('password_hash = ?'); params.push(await bcrypt.hash(password, 10)); }
   if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update.' });
 
   params.push(id, req.user.tenant_id);
