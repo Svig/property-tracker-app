@@ -1,7 +1,18 @@
 -- ============================================================
--- Migration 004 — super admin protection, user profile fields
--- (mobile number, email/mobile verification groundwork), and a
+-- Migration 004 — user profile fields (mobile number, email/mobile
+-- verification groundwork), tenant-level admin protection, and a
 -- tenant-level allowed email domain column for future use.
+--
+-- NOTE: this version is corrected from the one first shipped, based on
+-- real-world testing against Aiven's MySQL. Two plain MySQL limitations
+-- (not Aiven-specific) caused the original to fail:
+--   1. MySQL's ALTER TABLE ... ADD COLUMN does not accept IF NOT EXISTS
+--      (that's a MariaDB-only extension) — removed here.
+--   2. The correlated NOT EXISTS subquery in the UPDATE didn't work as
+--      written — rewritten as a LEFT JOIN ... IS NULL instead.
+-- If you're running this for the first time, this version should apply
+-- cleanly on real MySQL, MariaDB, or Aiven's MySQL.
+--
 -- Run as: mysql -u root -p viewing_register < migrate_004_user_profile.mariadb.sql
 -- ============================================================
 
@@ -16,9 +27,8 @@ ALTER TABLE users
 ALTER TABLE tenants
   ADD COLUMN allowed_email_domain VARCHAR(190) NULL AFTER logo_url;
 
--- Make the earliest admin in each tenant the super admin, if one hasn't
--- been designated yet. Safe to run more than once — it's a no-op once
--- each tenant already has one.
+-- Make the earliest admin in each tenant the protected admin, if one
+-- hasn't been designated yet.
 UPDATE users u
 JOIN (
     SELECT tenant_id, MIN(id) AS first_admin_id

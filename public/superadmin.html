@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Super Admin \u2014 Viewing Register Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<style>
+  /* super-admin-only additions, layered on top of the shared stylesheet */
+  body{ background:#12181F; } /* deliberately darker than the tenant app so it never looks confusable with it */
+  header.sa{ background:#0B0F14; border-bottom-color:var(--rust); }
+  header.sa .sub{ color:#D98F73; }
+  .tenant-card{ padding:16px 18px; }
+  .tenant-card .top{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  .tenant-card .t-name{ font-family:var(--font-display); font-size:19px; font-weight:600; }
+  .tenant-card .t-meta{ font-size:12.5px; color:var(--ink-light); font-family:var(--font-mono); margin-top:3px; }
+  .tenant-card .t-actions{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .swatch{ display:inline-block; width:14px; height:14px; border-radius:3px; border:1px solid var(--line); vertical-align:middle; margin-right:4px; }
+  .tier-badge{ font-family:var(--font-mono); font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px; padding:3px 8px; border-radius:20px; background:var(--paper-dark); color:var(--ink-light); }
+</style>
+</head>
+<body>
+<div id="root" class="app"></div>
+<script src="/superadmin.js"></script>
+</body>
+</html>

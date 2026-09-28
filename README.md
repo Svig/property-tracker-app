@@ -172,7 +172,125 @@ All endpoints except `/api/auth/login` require `Authorization: Bearer <token>`.
 
 ---
 
-## Changelog — hosting fixes, super admin, user profiles (latest round)
+## Changelog — theme application (latest round)
+
+The theme fields set from the super admin console (`app_name`,
+`primary_color`, `brass_color`, `logo_url`) are now actually applied in
+the tenant app — previously they were stored and editable but nothing
+read them.
+
+- `POST /api/auth/login` and `GET /api/auth/me` now join `tenants` and
+  return a `theme` object alongside `user`.
+- `public/app.js` applies it via `applyTheme()`: overrides the `--ink`
+  and `--brass` CSS variables on `:root`, swaps the header's text for a
+  logo `<img>` if `logo_url` is set, and sets the page title. Runs after
+  every login and every session-restore (`/auth/me` on page load) — never
+  cached across sessions, so a shared device can never show a stale
+  tenant's colors after switching tenants or logging out. Verified this
+  specifically: simulated a session carrying a leftover `--ink` override
+  from a previous tenant, then applied an unbranded tenant's theme (all
+  fields `null`) and confirmed the override is actually removed, not just
+  overwritten with a falsy value.
+- **Scope deliberately limited**: only the two "identity" colors are
+  overridden, not every derived shade (`--ink-light`, `--brass-dark`,
+  chip colors, etc.) — those stay fixed. A fully recomputed per-tenant
+  palette (e.g. via `color-mix()` or precomputed light/dark variants) is
+  a reasonable follow-up if the two-color override doesn't give enough
+  visual distinction between tenants in practice.
+- **Only applies after login** — the login screen itself (before a tenant
+  is known) still shows generic "Viewing Register" branding, since there's
+  no tenant resolution before authentication yet (see "Multi-tenancy"
+  section below — subdomain-based resolution is what would enable
+  pre-login branding).
+- Tested end-to-end: created a tenant with custom colors/logo via the
+  super admin console, logged in as its admin, confirmed the API returns
+  that tenant's exact theme — and confirmed the Default tenant's admin
+  still gets its own (unbranded) theme, not Acme's, logging in
+  immediately after. No cross-tenant leakage.
+
+### Previous round — global super admin layer
+
+You now have two completely separate login surfaces:
+
+- **The tenant app** (`/`) — what agents and tenant admins use day to day.
+  Unchanged in spirit, just now sitting under a bigger platform.
+- **The super admin console** (`/superadmin`) — a separate page, separate
+  login, separate JWT type, for managing tenants themselves. Log in with:
+  ```
+  Email:    superadmin@example.com
+  Password: ChangeMeSuperAdmin123!
+  ```
+  **Change this immediately** — there's no UI for it yet (only tenant
+  users have a password-reset flow so far); use
+  `POST /api/superadmin/auth/change-password` directly for now, or ask
+  for a "change my password" screen to be added to the console.
+
+**Why a separate table, not a flag:** a super admin is stored in a new
+`super_admins` table, not as a special row in `users`. This was a
+deliberate choice over "a user with no tenant_id" — with a genuinely
+separate table, there is no query that could ever accidentally surface a
+super admin inside a tenant's Manage Users list, because they're not in
+the same table to begin with. Tested directly: created a new tenant,
+fetched its user list as that tenant's own admin, and confirmed only the
+tenant's own admin appears — the super admin is structurally absent, not
+just filtered out.
+
+**What the console does:**
+- Lists every tenant on the platform, with user/client counts, theme
+  colors, and subscription tier at a glance.
+- **Create a tenant** — name, slug, theme (colors, logo, app display
+  name), the future-use allowed email domain, subscription tier, and the
+  tenant's first admin account, all in one step (a tenant needs at least
+  one admin to be usable, so this isn't optional).
+- **Edit a tenant** — same fields, plus active/inactive.
+- **Delete a tenant** — cascades to every user, client, property, and
+  note that belongs to it (existing foreign keys already had
+  `ON DELETE CASCADE`; this is the first place that actually gets
+  exercised). The console requires typing the tenant's slug to confirm,
+  since this is irreversible.
+- **Switch to Tenant** — the "log into any tenant" capability. This
+  issues a normal tenant-scoped session token *as that tenant's primary
+  admin* (not a fake identity — a real login as a real user in their
+  data) and redirects to the tenant app. A "\u2190 Back to Super Admin" link
+  appears in the tenant app's header for the rest of that browser
+  session so you can hop back without logging in again.
+
+**Two real gaps this surfaced and fixed while building it**, not just
+theoretical: I actually created a second tenant, deactivated it, and
+confirmed both of these before considering it done —
+- Deactivating a tenant now actually blocks its users from logging in
+  (previously `tenants.is_active` was just a column nobody checked).
+  Worth knowing: this blocks new logins immediately, but a user already
+  logged in keeps their session until their token naturally expires (12h)
+  — it's not an instant kick. Flag it if you want immediate revocation;
+  that needs a DB check on every request rather than just at login, which
+  is a deliberate tradeoff I didn't want to make silently.
+- The same email existing in two different tenants (two agencies onboard
+  someone with the same personal address) is now handled correctly —
+  login checks the password against every matching account rather than
+  assuming the first match found is the right one.
+
+**Subscription tiers:** `tenants.subscription_tier` exists and is
+editable from the console (free/starter/pro), but nothing reads it
+anywhere yet — no feature is actually gated by tier. That's genuinely
+next-phase work: deciding which features belong to which tier, and
+adding the checks in the relevant routes/UI. The column and the console
+control exist now so that work is additive later, same reasoning as
+adding `tenant_id` early.
+
+**Migrating an existing database:** run `migrate_005_super_admin.*.sql`
+if you already have `is_super_admin` on your `users` table (i.e. you ran
+`migrate_004`) — it renames that column to `is_primary_admin`, adds the
+`super_admins` table, seeds the first super admin, and adds
+`subscription_tier`. Also worth knowing: `migrate_004`'s MariaDB script
+was corrected based on real Aiven testing — `ADD COLUMN IF NOT EXISTS`
+isn't valid MySQL syntax (that's a MariaDB-only extension) regardless of
+host, and a `NOT EXISTS` correlated subquery needed rewriting as a
+`LEFT JOIN ... IS NULL`. If you ran the original broken version and
+patched it by hand already, you're in the same place this corrected
+version would leave you — no need to re-run anything.
+
+### Previous round — Render/Aiven hosting fixes, tenant-level admin protection, user profiles
 
 **Hosting/deployment fixes, from getting this actually running on Render + Aiven:**
 - The app now bootstraps its own database schema on every startup (creates
@@ -335,30 +453,34 @@ column bolted on, but wired through the whole stack:
   user inside it. Nothing about how you use the app today changes — you
   just happen to be the only tenant.
 
-### What's still not built (the genuinely new work when you're ready)
+### What's now built vs. what's still open
 
-Having `tenant_id` everywhere removes the risky part (retrofitting
-isolation onto live data). What's left is additive, not a migration:
+Tenant provisioning and a super-admin tier — both listed as "not built"
+in the round that first added `tenant_id` — are now built, tested, and
+covered above in the "global super admin layer" changelog entry. What's
+genuinely still open:
 
-1. **Tenant provisioning** — right now new tenants only exist if you
-   insert a row into `tenants` by hand. A real "sign up a new company"
-   flow (creates a tenant + its first admin) doesn't exist yet.
-2. **Tenant resolution for public traffic** — today, tenant comes from
+1. **Tenant resolution for public traffic** — today, tenant comes from
    the JWT, which is fine once someone's logged in. For a public
    multi-tenant deployment you'd typically also resolve tenant *before*
    login (e.g. by subdomain — `acme.viewingregister.com`) so each
    company's login page can carry its own branding. That's a routing
    layer, not a data model change.
-3. **Applying the theme columns** — `tenants.primary_color` /
-   `brass_color` / `logo_url` exist but nothing reads them yet. Wiring
-   them into `public/styles.css`'s CSS variables at login time is a small
-   frontend task once you're ready.
-4. **A super-admin tier** — someone above tenant-admins who can create
-   tenants and see across all of them (for support/billing). Not built;
-   today's `admin` role is scoped to its own tenant only, by design.
-5. **Billing/plan limits**, if this is ever sold rather than used
+2. **Applying the theme columns to the actual UI** — `tenants.primary_color`
+   / `brass_color` / `logo_url` are now editable from the super admin
+   console, but the tenant app itself (`public/styles.css`'s CSS
+   variables) doesn't read them yet — every tenant currently looks the
+   same regardless of what's set. Wiring that up (fetch the tenant's
+   theme at login, apply as CSS variable overrides) is a self-contained
+   frontend task.
+3. **Subscription tier enforcement** — the tier is stored and editable,
+   nothing is gated by it yet. See the changelog entry above.
+4. **Billing/plan limits**, if this is ever sold rather than used
    internally. Out of scope unless you take this commercial.
 
-Short version: the hard, easy-to-get-wrong part (data isolation) is done
-and tested. What's left is provisioning and routing, which you can build
+Short version: the hard, easy-to-get-wrong parts (data isolation,
+platform-level tenant management, keeping a super admin structurally
+separate from tenant data) are done and tested. What's left is theming
+and monetization, which you can build incrementally whenever you're
+ready — nothing here needs another data-model rework to get to it.
 incrementally without touching what's already here.

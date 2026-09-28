@@ -24,6 +24,7 @@ const formatThousands = digits => digits ? Number(digits).toLocaleString('en-ZA'
 const state = {
   token: localStorage.getItem('vr_token') || null,
   user: null,
+  theme: null,               // { appName, primaryColor, brassColor, logoUrl } — this tenant's branding, applied at login/session-restore
   view: 'signin',           // signin | dashboard | users | properties
   clients: [],
   viewing: { property:'', propertyId:null, listingUrl:null, recent:[] },
@@ -65,14 +66,38 @@ function logout(){
   state.token = null;
   state.user = null;
   localStorage.removeItem('vr_token');
+  resetTheme();
   render();
+}
+
+// Applies this tenant's branding as CSS variable overrides on :root, and
+// swaps the header's title/logo. Deliberately scoped: only the two
+// "identity" colors (--ink, the dark/primary tone; --brass, the accent)
+// are overridden, not every derived shade (--ink-light, --brass-dark,
+// etc.) — a full recomputed palette per tenant is a bigger follow-up if
+// wanted. This runs after every login and every session-restore (/me),
+// so it can never show stale branding from a previously logged-in tenant
+// on a shared device.
+function applyTheme(theme){
+  state.theme = theme || null;
+  const el = document.documentElement;
+  if (theme?.primaryColor) el.style.setProperty('--ink', theme.primaryColor);
+  else el.style.removeProperty('--ink');
+  if (theme?.brassColor) el.style.setProperty('--brass', theme.brassColor);
+  else el.style.removeProperty('--brass');
+  document.title = (theme?.appName || 'Viewing Register') + ' \u2014 Viewing Sign-In';
+}
+
+function resetTheme(){
+  applyTheme(null);
 }
 
 async function bootstrap(){
   if (!state.token) { state.loading = false; return render(); }
   try {
-    const { user } = await api('/auth/me');
+    const { user, theme } = await api('/auth/me');
     state.user = user;
+    applyTheme(theme);
     await loadAll();
   } catch (e) {
     logout();
@@ -112,7 +137,9 @@ function render(){
   root.innerHTML = `
     <header>
       <div class="brand">
-        <span class="mark">Viewing Register</span>
+        ${state.theme?.logoUrl
+          ? `<img src="${escapeHtml(state.theme.logoUrl)}" alt="${escapeHtml(state.theme.appName || 'logo')}" style="height:28px;max-width:160px;object-fit:contain;border-radius:3px">`
+          : `<span class="mark">${escapeHtml(state.theme?.appName || 'Viewing Register')}</span>`}
         <span class="sub">Property Client Tracker</span>
       </div>
       <div class="tabs">
@@ -122,6 +149,7 @@ function render(){
         <button data-view="properties" class="${state.view==='properties'?'active':''}">Properties</button>
       </div>
       <div class="who">
+        ${localStorage.getItem('vr_superadmin_token') ? `<button id="backToSuperAdminBtn" style="border-color:var(--rust);color:#D98F73">\u2190 Back to Super Admin</button>` : ''}
         <span>${escapeHtml(state.user.name)} \u00b7 ${state.user.role}</span>
         <button id="logoutBtn">Log out</button>
       </div>
@@ -136,6 +164,8 @@ function render(){
     render();
   });
   document.getElementById('logoutBtn').onclick = logout;
+  const backBtn = document.getElementById('backToSuperAdminBtn');
+  if (backBtn) backBtn.onclick = () => { window.location.href = '/superadmin'; };
 
   const main = document.getElementById('main');
   if (state.view === 'signin') { main.innerHTML = renderSignIn(); attachSignInHandlers(); }
@@ -186,8 +216,9 @@ function attachLoginHandlers(){
     const email = document.getElementById('loginEmail').value;
     const password = document.getElementById('loginPassword').value;
     try {
-      const { token, user } = await api('/auth/login', { method:'POST', body:{ email, password } });
+      const { token, user, theme } = await api('/auth/login', { method:'POST', body:{ email, password } });
       state.token = token; state.user = user; state.authError = null;
+      applyTheme(theme);
       localStorage.setItem('vr_token', token);
       state.loading = true; render();
       await loadAll();
@@ -628,7 +659,7 @@ function renderUsers(){
     <div class="card" style="margin-bottom:20px">
       ${state.users.map(u => {
         const isSelf = u.id === state.user.id;
-        const locked = u.is_super_admin; // protected from anyone, including other admins
+        const locked = u.is_primary_admin; // protected from anyone, including other admins
         if (editingUserId === u.id) {
           return `
             <div class="user-row" data-editrow="${u.id}">
@@ -650,7 +681,7 @@ function renderUsers(){
             <div class="u-name">
               ${escapeHtml(u.name)}
               ${isSelf ? '<span style="color:var(--ink-light);font-weight:400"> (you)</span>' : ''}
-              ${locked ? '<span class="chip role-admin" style="margin-left:6px">Super Admin</span>' : ''}
+              ${locked ? '<span class="chip role-admin" style="margin-left:6px">Primary Admin</span>' : ''}
             </div>
             <div class="u-email">${escapeHtml(u.email)}${u.mobile ? ' \u00b7 '+escapeHtml(u.mobile) : ''}</div>
           </div>

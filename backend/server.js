@@ -8,6 +8,7 @@ const userRoutes = require('./routes/users.routes');
 const clientRoutes = require('./routes/clients.routes');
 const viewingRoutes = require('./routes/viewing.routes');
 const propertiesRoutes = require('./routes/properties.routes');
+const superadminRoutes = require('./routes/superadmin.routes');
 const { bootstrapDatabase } = require('./scripts/bootstrap-db');
 
 const app = express();
@@ -21,11 +22,18 @@ app.use('/api/users', userRoutes);
 app.use('/api/clients', clientRoutes);
 app.use('/api/viewing', viewingRoutes);
 app.use('/api/properties', propertiesRoutes);
+app.use('/api/superadmin', superadminRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
-// Serve the frontend
+// Serve the frontend. The super admin console is a separate page from the
+// tenant app (separate auth realm, separate concerns) — served explicitly
+// here, before the SPA catch-all below would otherwise swallow the request
+// and serve the tenant app's index.html instead.
 app.use(express.static(path.join(__dirname, '..', 'public')));
+app.get('/superadmin', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'superadmin.html'));
+});
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });

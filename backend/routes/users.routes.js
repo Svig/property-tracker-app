@@ -10,7 +10,7 @@ const router = express.Router();
 // touch another tenant's logins.
 router.use(requireAuth, requireAdmin);
 
-const USER_COLUMNS = 'id, name, email, email_verified, mobile, mobile_verified, role, is_active, is_super_admin, created_at';
+const USER_COLUMNS = 'id, name, email, email_verified, mobile, mobile_verified, role, is_active, is_primary_admin, created_at';
 
 // GET /api/users — list all logins for this tenant (admin only)
 router.get('/', async (req, res) => {
@@ -48,7 +48,7 @@ router.post('/', async (req, res) => {
 });
 
 // PATCH /api/users/:id — update profile info, role, active status, or reset a password
-// (admin only, same tenant only). The tenant's super admin (is_super_admin=true) can
+// (admin only, same tenant only). The tenant's super admin (is_primary_admin=true) can
 // never be demoted or deactivated by ANYONE, including other admins — not just by
 // themselves — so a tenant can never end up with no way back into admin access.
 router.patch('/:id', async (req, res) => {
@@ -56,12 +56,12 @@ router.patch('/:id', async (req, res) => {
   const { name, email, mobile, role, is_active, password } = req.body || {};
 
   const target = await db.getOne(
-    'SELECT id, is_super_admin FROM users WHERE id = ? AND tenant_id = ?',
+    'SELECT id, is_primary_admin FROM users WHERE id = ? AND tenant_id = ?',
     [id, req.user.tenant_id]
   );
   if (!target) return res.status(404).json({ error: 'User not found.' });
 
-  if (target.is_super_admin && (role === 'agent' || is_active === false)) {
+  if (target.is_primary_admin && (role === 'agent' || is_active === false)) {
     return res.status(400).json({ error: 'The super admin account can\u2019t be demoted or deactivated.' });
   }
   if (Number(id) === req.user.id && (role === 'agent' || is_active === false)) {
@@ -109,11 +109,11 @@ router.delete('/:id', async (req, res) => {
     return res.status(400).json({ error: "You can't delete your own account while logged in as it." });
   }
   const target = await db.getOne(
-    'SELECT role, is_super_admin FROM users WHERE id = ? AND tenant_id = ?',
+    'SELECT role, is_primary_admin FROM users WHERE id = ? AND tenant_id = ?',
     [id, req.user.tenant_id]
   );
   if (!target) return res.status(404).json({ error: 'User not found.' });
-  if (target.is_super_admin) {
+  if (target.is_primary_admin) {
     return res.status(400).json({ error: 'The super admin account can\u2019t be deleted.' });
   }
   const admins = await db.query(

@@ -26,17 +26,35 @@ CREATE TABLE IF NOT EXISTS tenants (
   brass_color     VARCHAR(20),
   logo_url        VARCHAR(500),
   allowed_email_domain VARCHAR(190),
+  subscription_tier VARCHAR(40) NOT NULL DEFAULT 'free',
   is_active       BOOLEAN       NOT NULL DEFAULT TRUE,
   created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMP     NOT NULL DEFAULT NOW()
 );
 
 -- ------------------------------------------------------------
+-- super_admins — global platform operators, deliberately NOT rows in
+-- `users`. See init.mariadb.sql for the full rationale: a separate table
+-- guarantees, by construction, that a super admin can never appear in
+-- any tenant's Manage Users list.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS super_admins (
+  id            SERIAL PRIMARY KEY,
+  name          VARCHAR(120)  NOT NULL,
+  email         VARCHAR(190)  NOT NULL UNIQUE,
+  password_hash VARCHAR(255)  NOT NULL,
+  is_active     BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMP     NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMP     NOT NULL DEFAULT NOW()
+);
+
+-- ------------------------------------------------------------
 -- users — email unique per tenant, not globally. The seeded admin is
--- also the tenant's super admin (is_super_admin=true): that one account
--- can never be deleted, demoted, or deactivated by anyone, including
--- other admins. email_verified / mobile / mobile_verified are groundwork
--- for future verification flows (not enforced anywhere yet).
+-- also the tenant's protected primary admin (is_primary_admin=true):
+-- that one account can never be deleted, demoted, or deactivated by
+-- anyone, including other tenant admins (a separate, global concept from
+-- super_admins above). email_verified / mobile / mobile_verified are
+-- groundwork for future verification flows (not enforced anywhere yet).
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
   id              SERIAL PRIMARY KEY,
@@ -49,7 +67,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash   VARCHAR(255)  NOT NULL,
   role            user_role     NOT NULL DEFAULT 'agent',
   is_active       BOOLEAN       NOT NULL DEFAULT TRUE,
-  is_super_admin  BOOLEAN       NOT NULL DEFAULT FALSE,
+  is_primary_admin  BOOLEAN       NOT NULL DEFAULT FALSE,
   created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMP     NOT NULL DEFAULT NOW(),
   UNIQUE (tenant_id, email)
@@ -172,7 +190,7 @@ INSERT INTO tenants (id, name, slug, app_name)
 VALUES (1, 'Default', 'default', 'Viewing Register')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO users (id, tenant_id, name, email, password_hash, role, is_super_admin)
+INSERT INTO users (id, tenant_id, name, email, password_hash, role, is_primary_admin)
 VALUES (
   1,
   1,
@@ -187,5 +205,22 @@ ON CONFLICT (tenant_id, email) DO NOTHING;
 INSERT INTO current_viewing (user_id, tenant_id, property) VALUES (1, 1, NULL)
   ON CONFLICT (user_id) DO NOTHING;
 
+-- ------------------------------------------------------------
+-- Seed the global super admin (platform operator, not a tenant user).
+-- Log in at /superadmin.html — completely separate from the tenant app.
+-- Email:    superadmin@example.com
+-- Password: ChangeMeSuperAdmin123!
+-- CHANGE THIS PASSWORD IMMEDIATELY AFTER FIRST LOGIN.
+-- ------------------------------------------------------------
+INSERT INTO super_admins (id, name, email, password_hash)
+VALUES (
+  1,
+  'Super Admin',
+  'superadmin@example.com',
+  '$2a$10$XFQd.0.Q48acN5roWJI4a.T4Iv4m7/Lyxb3J6eldBIekdtQ8Ydube'
+)
+ON CONFLICT (email) DO NOTHING;
+
 SELECT setval('tenants_id_seq', (SELECT MAX(id) FROM tenants));
 SELECT setval('users_id_seq', (SELECT MAX(id) FROM users));
+SELECT setval('super_admins_id_seq', (SELECT MAX(id) FROM super_admins));
