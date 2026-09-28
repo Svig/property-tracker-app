@@ -53,7 +53,7 @@ async function api(path, { method = 'GET', body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
   const res = await fetch('/api' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  if (res.status === 401) {
+  if (res.status === 401 && state.token) { // only a real expired session, not a failed login attempt (no token yet)
     logout();
     throw new Error('Session expired. Please log in again.');
   }
