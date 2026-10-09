@@ -130,6 +130,7 @@ function render(){
   document.getElementById('propOverlay')?.remove();
   document.getElementById('visitorsOverlay')?.remove();
   document.getElementById('agentsOverlay')?.remove();
+  document.getElementById('exportOverlay')?.remove();
 
   if (state.loading) { root.innerHTML = `<div class="loading">Opening the register\u2026</div>`; return; }
   if (!state.token || !state.user) { root.innerHTML = renderLogin(); attachLoginHandlers(); return; }
@@ -188,6 +189,10 @@ function render(){
   if (state.agentsForPropertyId) {
     document.body.insertAdjacentHTML('beforeend', renderAgentsModal());
     attachAgentsModalHandlers();
+  }
+  if (exportDialog) {
+    document.body.insertAdjacentHTML('beforeend', renderExportModal());
+    attachExportModalHandlers();
   }
 }
 
@@ -468,16 +473,28 @@ function attachPropertyModalHandlers(){
 // ================= DASHBOARD =================
 let dashQuery = '';
 let dashStatus = 'all';
+let dashSort = { key: 'name', dir: 'asc' };       // sort by any field (SORT_FIELDS in contacts-export.js)
+const selectedContactIds = new Set();              // ticked cards, kept while searching/filtering/sorting
+let exportDialog = null;                           // { ids:[clientId,...] } while the export dialog is open
+let exportForm = { convention: 'name_surname', custom: '', dedupe: true };
 
-function renderDashboard(){
+// The list the dashboard shows: status filter -> search -> chosen sort.
+function dashFiltered(){
   const filtered = state.clients
     .filter(c => dashStatus === 'all' || c.status === dashStatus)
     .filter(c => {
       if (!dashQuery.trim()) return true;
       const q = dashQuery.toLowerCase();
       return (c.name||'').toLowerCase().includes(q) || (c.property||'').toLowerCase().includes(q) || (c.phone||'').includes(q);
-    })
-    .sort((a,b) => a.name.localeCompare(b.name));
+    });
+  return sortClients(filtered, dashSort.key, dashSort.dir, STATUSES.map(s => s.k));
+}
+
+function renderDashboard(){
+  const filtered = dashFiltered();
+  // forget ticks for clients that no longer exist (e.g. deleted from the drawer)
+  for (const id of [...selectedContactIds]) if (!state.clients.some(c => c.id === id)) selectedContactIds.delete(id);
+  const selCount = selectedContactIds.size;
 
   const weekAgo = Date.now() - 7*24*60*60*1000;
   const stats = {
@@ -502,19 +519,31 @@ function renderDashboard(){
       </select>
       <a class="btn secondary" href="/api/clients/export/csv?token=${encodeURIComponent(state.token)}" id="exportLink">Export CSV</a>
     </div>
+    <div class="toolbar">
+      <select id="dashSortKey" aria-label="Sort by">
+        ${SORT_FIELDS.map(f => `<option value="${f.k}" ${dashSort.key===f.k?'selected':''}>Sort: ${f.label}</option>`).join('')}
+      </select>
+      <button class="btn secondary" id="dashSortDir" title="Toggle sort direction">${dashSort.dir === 'asc' ? '\u2191 A\u2192Z' : '\u2193 Z\u2192A'}</button>
+      <label class="check-inline"><input type="checkbox" id="selectAllContacts" ${filtered.length===0?'disabled':''}> Select all (${filtered.length})</label>
+      <button class="btn brass" id="exportSelectedBtn" ${selCount===0?'disabled':''}>Export selected${selCount ? ' ('+selCount+')' : ''} as contact cards</button>
+    </div>
     <div class="list-col">
       ${filtered.length === 0 ? `<div class="card empty"><div class="mark">No clients here yet</div><div>Sign-ins from viewings will appear on this register.</div></div>` :
         filtered.map(c => `
           <div class="card client-card" data-id="${c.id}">
             <div class="top">
-              <div>
+              <label class="pick" title="Select for export"><input type="checkbox" class="pickBox" data-id="${c.id}" ${selectedContactIds.has(c.id)?'checked':''}></label>
+              <div class="grow">
                 <div class="name">${escapeHtml(c.name)}</div>
                 <div class="meta">${escapeHtml(c.phone)}${c.email ? ' \u00b7 '+escapeHtml(c.email) : ''}</div>
               </div>
               <span class="chip ${statusMeta(c.status).cls}">${statusMeta(c.status).label}</span>
             </div>
             ${c.property ? `<div class="prop">${escapeHtml(c.property)}</div>` : ''}
-            <div class="meta" style="margin-top:6px">Signed in ${fmtDate(c.created_at)}${c.budget ? ' \u00b7 '+escapeHtml(c.budget) : ''}</div>
+            <div class="card-foot">
+              <div class="meta">Signed in ${fmtDate(c.created_at)}${c.budget ? ' \u00b7 '+escapeHtml(c.budget) : ''}</div>
+              <button class="btn secondary small exportOneBtn" data-id="${c.id}">Export card</button>
+            </div>
           </div>
         `).join('')}
     </div>
@@ -524,6 +553,32 @@ function renderDashboard(){
 function attachDashboardHandlers(){
   document.getElementById('dashSearch').oninput = e => { dashQuery = e.target.value; render(); };
   document.getElementById('dashStatus').onchange = e => { dashStatus = e.target.value; render(); };
+  document.getElementById('dashSortKey').onchange = e => { dashSort.key = e.target.value; render(); };
+  document.getElementById('dashSortDir').onclick = () => { dashSort.dir = dashSort.dir === 'asc' ? 'desc' : 'asc'; render(); };
+
+  // --- selection ---
+  const visible = dashFiltered();
+  const all = document.getElementById('selectAllContacts');
+  const nSel = visible.filter(c => selectedContactIds.has(c.id)).length;
+  all.checked = visible.length > 0 && nSel === visible.length;
+  all.indeterminate = nSel > 0 && nSel < visible.length;
+  all.onchange = () => {
+    visible.forEach(c => all.checked ? selectedContactIds.add(c.id) : selectedContactIds.delete(c.id));
+    render();
+  };
+  document.querySelectorAll('.pick').forEach(el => el.onclick = e => e.stopPropagation()); // ticking must not open the drawer
+  document.querySelectorAll('.pickBox').forEach(el => el.onchange = () => {
+    const id = Number(el.dataset.id);
+    el.checked ? selectedContactIds.add(id) : selectedContactIds.delete(id);
+    render();
+  });
+  document.getElementById('exportSelectedBtn').onclick = () => { exportDialog = { ids: [...selectedContactIds] }; render(); };
+  document.querySelectorAll('.exportOneBtn').forEach(el => el.onclick = e => {
+    e.stopPropagation();
+    exportDialog = { ids: [Number(el.dataset.id)] };
+    render();
+  });
+
   document.querySelectorAll('.client-card').forEach(el => {
     el.onclick = () => {
       const id = Number(el.dataset.id);
@@ -535,6 +590,112 @@ function attachDashboardHandlers(){
   // NOTE: CSV export uses a query-string token here for simplicity of a plain <a> download link.
   // In production, prefer a short-lived signed download URL instead of the JWT in the querystring
   // (see README security notes).
+}
+
+// ================= EXPORT AS CONTACT CARD(S) =================
+// Everything is generated in the browser from the clients already loaded,
+// so no new API route and no JWT-in-URL download. One contact -> one .vcf;
+// several -> a .zip of separate single-contact .vcf files.
+function exportRows(){
+  let rows = exportDialog.ids.map(id => state.clients.find(c => c.id === id)).filter(Boolean);
+  const before = rows.length;
+  if (rows.length > 1 && exportForm.dedupe) rows = dedupeByPhone(rows);
+  return { rows, skipped: before - rows.length, before };
+}
+
+function exportFilenames(rows){
+  return uniqueFilenames(rows.map(c => buildFilename(c, exportForm.convention, exportForm.custom)));
+}
+
+function renderExportModal(){
+  const { rows, before } = exportRows();
+  const multi = before > 1;
+  const hasRepeats = multi && dedupeByPhone(exportDialog.ids.map(id => state.clients.find(c => c.id === id)).filter(Boolean)).length < before;
+  return `
+    <div class="overlay center" id="exportOverlay">
+      <div class="property-modal export-modal">
+        <div class="drawer-head"><h3>Export contact card${multi ? 's' : ''}</h3><button class="closeX" id="exportClose">&times;</button></div>
+        <p class="hint">${multi ? `${before} contacts selected. Each becomes its own contact card, delivered together as one ZIP.` : 'One contact card (.vcf) \u2014 open it on your phone to add the contact.'}</p>
+
+        <label>File naming</label>
+        <div class="naming-list">
+          ${NAMING_OPTIONS.map(o => `
+            <label class="opt-row"><input type="radio" name="exConv" value="${o.k}" ${exportForm.convention===o.k?'checked':''}> ${o.label}</label>`).join('')}
+        </div>
+        <div class="field" id="exCustomWrap" style="${exportForm.convention==='name_surname_custom'?'':'display:none'}">
+          <label for="exCustom">Custom text</label>
+          <input type="text" id="exCustom" maxlength="40" placeholder="e.g. Open House May" value="${escapeHtml(exportForm.custom)}">
+        </div>
+
+        ${hasRepeats ? `<label class="opt-row" id="exDedupeRow"><input type="checkbox" id="exDedupe" ${exportForm.dedupe?'checked':''}> Skip repeat sign-ins (same phone number) \u2014 keep the most recent</label>` : ''}
+
+        <label style="margin-top:14px">File names</label>
+        <div class="export-preview" id="exPreview"></div>
+
+        <div class="modal-actions">
+          <button class="btn secondary" id="exportCancel">Cancel</button>
+          <button class="btn brass" id="exportGo">${multi ? 'Download ZIP' : 'Download card'}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// Live preview — updated in place (no full render) so typing in the custom box never loses focus.
+function updateExportPreview(){
+  const { rows, skipped } = exportRows();
+  const names = exportFilenames(rows);
+  const shown = names.slice(0, 4).map(n => `<div>${escapeHtml(n)}</div>`).join('');
+  const more = names.length > 4 ? `<div class="more">\u2026and ${names.length - 4} more</div>` : '';
+  const note = skipped > 0 ? `<div class="more">${skipped} repeat sign-in${skipped>1?'s':''} skipped</div>` : '';
+  document.getElementById('exPreview').innerHTML = shown + more + note;
+  const needsCustom = exportForm.convention === 'name_surname_custom' && !exportForm.custom.trim();
+  document.getElementById('exportGo').disabled = needsCustom || rows.length === 0;
+}
+
+function attachExportModalHandlers(){
+  const close = () => { exportDialog = null; render(); };
+  document.getElementById('exportClose').onclick = close;
+  document.getElementById('exportCancel').onclick = close;
+  document.getElementById('exportOverlay').onclick = e => { if (e.target.id === 'exportOverlay') close(); };
+
+  document.querySelectorAll('input[name=exConv]').forEach(r => r.onchange = () => {
+    exportForm.convention = r.value;
+    document.getElementById('exCustomWrap').style.display = r.value === 'name_surname_custom' ? '' : 'none';
+    if (r.value === 'name_surname_custom') document.getElementById('exCustom').focus();
+    updateExportPreview();
+  });
+  document.getElementById('exCustom').oninput = e => { exportForm.custom = e.target.value; updateExportPreview(); };
+  const dd = document.getElementById('exDedupe');
+  if (dd) dd.onchange = () => { exportForm.dedupe = dd.checked; updateExportPreview(); };
+
+  document.getElementById('exportGo').onclick = runContactExport;
+  updateExportPreview();
+}
+
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function runContactExport(){
+  const { rows } = exportRows();
+  if (rows.length === 0) return;
+  const names = exportFilenames(rows);
+  const enc = new TextEncoder();
+  const files = rows.map((c, i) => ({ name: names[i], data: enc.encode(buildVCard(c, { fmtDate })) }));
+
+  if (files.length === 1) {
+    downloadBlob(new Blob([files[0].data], { type: 'text/vcard;charset=utf-8' }), files[0].name);
+  } else {
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadBlob(new Blob(buildZipParts(files), { type: 'application/zip' }), `contacts_${stamp}.zip`);
+  }
+  exportDialog = null;
+  render();
+  showToast(`Exported ${files.length} contact card${files.length > 1 ? 's' : ''}`);
 }
 
 async function loadClientHistory(id){

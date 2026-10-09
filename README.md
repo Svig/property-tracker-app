@@ -172,7 +172,29 @@ All endpoints except `/api/auth/login` require `Authorization: Bearer <token>`.
 
 ---
 
-## Changelog — theme application (latest round)
+## Changelog — contact-card export, bulk select & sorting (latest round)
+
+**Dashboard (contacts) now has:**
+
+- **Export as contact card** — an *Export card* button on every client card. Produces a standard vCard 3.0 (`.vcf`) that iPhone and Android open straight into "Add contact". Card contents: name (split into given name / surname), phone, email, and a short note (`Viewed: <property> on <date>`). Budget, financing and lead status are **deliberately not exported** — they are sales-sensitive and don't belong in someone's personal address book.
+- **Multi-select export** — a tick box on each card, a *Select all* box (selects everything currently shown, i.e. respects search/status filter), and *Export selected (n)*. Selection is kept while searching/filtering/sorting. Several contacts download as one `.zip` containing **one separate `.vcf` per contact**; a single contact downloads as a plain `.vcf`.
+- **Naming convention dialog** (shown on every export, with a live preview of the resulting filenames):
+  - `Name_Surname.vcf`
+  - `Name_Surname_PropertyViewed.vcf`
+  - `Name_Surname_CustomText.vcf` (custom text typed once, appended to every file; Export is disabled until it's filled in)
+  Filenames are sanitised (illegal characters stripped, accents kept), a missing property just leaves that part out, and duplicate filenames in one batch become `_2`, `_3`, ...
+- **Repeat sign-ins** — each register row is one *sign-in*, so a person who viewed three properties has three rows (same phone). When a multi-export contains repeats, a checkbox (default **on**) keeps only the most recent sign-in per phone number, so the phone doesn't get three copies of one person. Untick it to export every row (useful with the *Property viewed* naming). `+27 82...` and `082...` are treated as the same number for this.
+- **Sort by any field** — Name, Surname, Phone, Email, Property, Status, Budget, Financing, Timeline, Source, Viewing date, Signed in, with an ascending/descending toggle. Budget sorts numerically on the lower figure of the range; Status sorts in pipeline order (New → Closed), not alphabetically; dates sort chronologically; empty values always sort last in both directions. Default is still Name A→Z.
+
+**How it's built:** everything is generated in the browser from the clients the dashboard already loaded — **no new API route, no schema change, no new dependency**, and (unlike the CSV link) no JWT in a URL. Tenant isolation is therefore unchanged: you can only export what `GET /api/clients` already returned for your tenant. The logic lives in a new `public/contacts-export.js` (pure functions: `splitName`, `buildVCard`, `buildFilename`, `buildZipParts`, `sortClients`, ...) loaded before `app.js`; the UI wiring is in the Dashboard section of `app.js`. The ZIP is a small hand-written store-only writer (~40 lines) rather than a library, to keep the "no build step" rule.
+
+**Known limits / judgement calls:**
+
+- Surname detection is a heuristic on the single `name` field: the last word is the surname, plus any lower-case particles before it (`van`, `van der`, `de`, `du`, `le`, ...). `Jan van der Merwe` -> given `Jan`, surname `van der Merwe`. Names that don't follow this (e.g. a double-barrelled *given* name written in lower case) can split differently. A proper fix is separate `first_name` / `last_name` columns on `clients` — not done, as it touches the sign-in form and every query.
+- "Select all" and the selected count include ticked contacts that are currently hidden by a filter (they stay ticked). The button label shows the true count.
+- On iPhone a `.zip` lands in Files and must be unzipped before each `.vcf` can be tapped to add it; a single `.vcf` opens "Add contact" directly. If you ever want *one tap imports everyone*, a single multi-contact `.vcf` would do that — intentionally not built, as you asked for individual cards.
+
+### Previous round — theme application
 
 The theme fields set from the super admin console (`app_name`,
 `primary_color`, `brass_color`, `logo_url`) are now actually applied in
