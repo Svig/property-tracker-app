@@ -71,6 +71,64 @@ function splitStatements(sql) {
   return statements;
 }
 
+// Splits SQL text into runnable statements: drops empty / comment-only
+// chunks and CREATE DATABASE (the hosted database already exists).
+function prepareStatements(raw) {
+  return splitStatements(raw)
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+    .filter(s => {
+      const withoutComments = s.replace(/--.*$/gm, '').trim();
+      return withoutComments.length > 0 && !/^CREATE\s+DATABASE/i.test(withoutComments);
+    });
+}
+
+// One-time data migrations, applied automatically on startup. Unlike the
+// schema above (which is idempotent and re-run every boot), each of these is
+// run once and then recorded in schema_migrations so it is never repeated —
+// even if you later delete the data it added. Files are
+// database/<name>.<mariadb|postgres>.sql; a missing file for the current
+// database type is skipped. A failure here is logged but does NOT stop the
+// server (it's sample/demo data, not schema) and is retried on the next
+// start — the SQL is written so a partial run is safe to repeat.
+const AUTO_MIGRATIONS = ['migrate_006_sample_data'];
+
+async function applyAutoMigrations() {
+  const dialect = isPostgres() ? 'postgres' : 'mariadb';
+  try {
+    await db.query(
+      `CREATE TABLE IF NOT EXISTS schema_migrations (
+         name       VARCHAR(190) NOT NULL PRIMARY KEY,
+         applied_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+       )`
+    );
+  } catch (err) {
+    console.error('[migrations] could not create schema_migrations — skipping data migrations:', err.message);
+    return;
+  }
+
+  for (const name of AUTO_MIGRATIONS) {
+    const file = path.join(__dirname, '..', '..', 'database', `${name}.${dialect}.sql`);
+    try {
+      if (!fs.existsSync(file)) {
+        console.log(`[migrations] ${name}: no ${dialect} version of this migration — skipped.`);
+        continue;
+      }
+      const done = await db.query('SELECT name FROM schema_migrations WHERE name = ?', [name]);
+      if (done.length > 0) {
+        console.log(`[migrations] ${name}: already applied.`);
+        continue;
+      }
+      const statements = prepareStatements(fs.readFileSync(file, 'utf8'));
+      for (const statement of statements) await db.query(statement);
+      await db.query('INSERT INTO schema_migrations (name) VALUES (?)', [name]);
+      console.log(`[migrations] ${name}: applied (${statements.length} statements).`);
+    } catch (err) {
+      console.error(`[migrations] ${name} FAILED — the app will still start; it will be retried on the next start. Error: ${err.message}`);
+    }
+  }
+}
+
 async function bootstrapDatabase() {
   const file = path.join(
     __dirname, '..', '..', 'database',
@@ -90,13 +148,7 @@ async function bootstrapDatabase() {
   // not real SQL — sent to a driver it would just error.
   raw = raw.split('\n').filter(line => !/^\s*\\c\s/.test(line)).join('\n');
 
-  const statements = splitStatements(raw)
-    .map(s => s.trim())
-    .filter(s => s.length > 0)
-    .filter(s => {
-      const withoutComments = s.replace(/--.*$/gm, '').trim();
-      return withoutComments.length > 0 && !/^CREATE\s+DATABASE/i.test(withoutComments);
-    });
+  const statements = prepareStatements(raw);
 
   console.log(`[bootstrap] checking database schema (${statements.length} statements)...`);
   let applied = 0;
@@ -121,6 +173,8 @@ async function bootstrapDatabase() {
   }
 
   console.log(`[bootstrap] done — ${applied} applied, ${alreadyThere} already existed. Database is ready.`);
+
+  await applyAutoMigrations();
 }
 
-module.exports = { bootstrapDatabase };
+module.exports = { bootstrapDatabase, applyAutoMigrations, prepareStatements };

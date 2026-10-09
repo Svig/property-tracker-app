@@ -172,7 +172,16 @@ All endpoints except `/api/auth/login` require `Authorization: Bearer <token>`.
 
 ---
 
-## Changelog — contact-card export, bulk select & sorting (latest round)
+## Changelog — sample data migration & run-once migrations (latest round)
+
+- **`database/migrate_006_sample_data.mariadb.sql`** — 5 demo properties (Sea Point, Constantia, V&A Waterfront, Claremont, Table View) and 32 viewing sign-ins in tenant 1, with repeat visitors across properties (one person is stored as both `072 555 0105` and `+27 72 555 0105` on purpose, to exercise repeat sign-in matching). Everything is fictional (`example.com` emails, `555` numbers). **It is applied automatically, once, on the next start/deploy** — no database client needed.
+- **Run-once migration runner** in `backend/scripts/bootstrap-db.js`: after the (re-runnable) schema step, it applies any file listed in `AUTO_MIGRATIONS` that isn't yet recorded in the new `schema_migrations` table, then records it. To add a future one-off data migration: drop `database/<name>.mariadb.sql` (and a `.postgres.sql` twin if you use Postgres) and add `<name>` to `AUTO_MIGRATIONS`. Only listed files run — the older `migrate_002`–`005` files are untouched and still manual.
+- **Safe by design:** statements are self-contained (no `@variables` — the connection pool may use a different connection per statement) and skip rows that already exist, so a half-finished run can be repeated without duplicates. A failure is logged as `[migrations] ... FAILED` but does **not** stop the server (it's demo data, not schema) and is retried next start.
+- **Removing the demo data:** run `database/cleanup_sample_data.mariadb.sql` yourself (not automatic). It deletes *every* sign-in at those 5 properties, so it also removes real ones added there since. Because the migration is recorded in `schema_migrations`, the data does **not** come back on the next deploy. Don't want it at all? Remove `'migrate_006_sample_data'` from `AUTO_MIGRATIONS` before deploying.
+- **Postgres:** there is no Postgres version of this migration yet; on Postgres the runner logs "no postgres version — skipped".
+- **Tested** on a real MariaDB 10.11 with the real bootstrap: first start applied 37 statements (32 clients, 5 properties, correct repeat visitors, `ë` and `–` stored correctly), second start skipped, forcing a re-run produced no duplicates, cleanup worked. **Not** tested against Aiven itself.
+
+### Previous round — contact-card export, bulk select & sorting
 
 **Dashboard (contacts) now has:**
 
