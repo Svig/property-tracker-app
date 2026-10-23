@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const db = require('../config/db');
+const { isConnectionError } = require('../config/db-monitor');
 
 function isPostgres() {
   return db.DB_CLIENT === 'postgres' || db.DB_CLIENT === 'postgresql';
@@ -103,6 +104,7 @@ async function applyAutoMigrations() {
        )`
     );
   } catch (err) {
+    if (isConnectionError(err)) throw err; // database unreachable: let the retry logic deal with it
     console.error('[migrations] could not create schema_migrations — skipping data migrations:', err.message);
     return;
   }
@@ -124,6 +126,7 @@ async function applyAutoMigrations() {
       await db.query('INSERT INTO schema_migrations (name) VALUES (?)', [name]);
       console.log(`[migrations] ${name}: applied (${statements.length} statements).`);
     } catch (err) {
+      if (isConnectionError(err)) throw err; // database unreachable: let the retry logic deal with it
       console.error(`[migrations] ${name} FAILED — the app will still start; it will be retried on the next start. Error: ${err.message}`);
     }
   }

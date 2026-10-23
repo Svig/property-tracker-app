@@ -36,6 +36,7 @@ const state = {
   visitorsForPropertyId: null,
   agentsForPropertyId: null,
   loading: true,
+  waking: false,             // true while the server says the database is starting up (Aiven powers idle databases off)
   toast: null,
   authError: null,
 };
@@ -58,7 +59,11 @@ async function api(path, { method = 'GET', body } = {}) {
     throw new Error('Session expired. Please log in again.');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Request failed.');
+  if (!res.ok) {
+    const err = new Error(data.error || 'Request failed.');
+    err.starting = res.status === 503; // the server (or its database) is still waking up — not an auth problem
+    throw err;
+  }
   return data;
 }
 
@@ -100,11 +105,23 @@ async function bootstrap(){
     applyTheme(theme);
     await loadAll();
   } catch (e) {
+    if (e.starting) {
+      // The database is waking up. Keep the session (don't log the person out),
+      // show a waiting screen and try again by itself.
+      state.loading = false;
+      state.waking = true;
+      render();
+      clearTimeout(wakeRetryTimer);
+      wakeRetryTimer = setTimeout(bootstrap, 10000);
+      return;
+    }
     logout();
   }
+  state.waking = false;
   state.loading = false;
   render();
 }
+let wakeRetryTimer = null;
 
 async function loadAll(){
   const [clientsRes, viewingRes, propertiesRes] = await Promise.all([api('/clients'), api('/viewing/current'), api('/properties')]);
@@ -133,6 +150,17 @@ function render(){
   document.getElementById('exportOverlay')?.remove();
 
   if (state.loading) { root.innerHTML = `<div class="loading">Opening the register\u2026</div>`; return; }
+  if (state.waking) {
+    root.innerHTML = `
+      <div class="login-wrap">
+        <div class="deed">
+          <h2>Waking up the database\u2026</h2>
+          <p>The database goes to sleep when it hasn't been used for a while. Starting it again usually takes a few minutes \u2014 this page will keep trying and carry on by itself. You're still signed in.</p>
+          <div class="loading" style="padding:10px 0 0">Checking again every few seconds\u2026</div>
+        </div>
+      </div>`;
+    return;
+  }
   if (!state.token || !state.user) { root.innerHTML = renderLogin(); attachLoginHandlers(); return; }
 
   root.innerHTML = `

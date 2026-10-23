@@ -95,11 +95,15 @@ let placeholder; // how each engine wants bound parameters written
 
 if (DB_CLIENT === 'postgres' || DB_CLIENT === 'postgresql') {
   const { Pool } = require('pg');
-  pool = new Pool({ ...connConfig, max: 10, ssl: sslConfig() });
+  // connectionTimeoutMillis: without it, connecting to a powered-off host can hang for minutes.
+  pool = new Pool({ ...connConfig, max: 10, ssl: sslConfig(), connectionTimeoutMillis: 10000 });
+  // An idle client dying (database powered off / restarted) emits 'error' on the pool; with no
+  // listener Node treats that as fatal and kills the process. The next query reconnects.
+  pool.on('error', err => console.error('[db] idle connection error (will reconnect on next query):', err.message));
   placeholder = 'postgres'; // $1, $2, ...
 } else {
   const mysql = require('mysql2/promise');
-  pool = mysql.createPool({ ...connConfig, waitForConnections: true, connectionLimit: 10, ssl: sslConfig() });
+  pool = mysql.createPool({ ...connConfig, waitForConnections: true, connectionLimit: 10, connectTimeout: 10000, ssl: sslConfig() });
   placeholder = 'mysql'; // ?, ?, ...
 }
 

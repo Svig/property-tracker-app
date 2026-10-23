@@ -172,7 +172,42 @@ All endpoints except `/api/auth/login` require `Authorization: Bearer <token>`.
 
 ---
 
-## Changelog — sample data migration & run-once migrations (latest round)
+## Changelog — database wake-up & retries (latest round)
+
+**The problem:** Aiven powers idle free-tier services off, and a powered-off service does **not** wake when something connects to it — only the Console button or Aiven's API turns it back on. So after a quiet spell the app couldn't reach the database until you powered it on by hand.
+
+**What the app does now**
+
+- **Wakes the database itself.** When it can't reach the database it asks Aiven's API for the service's state and, if it is `POWEROFF`, sends the power-on request (the API equivalent of `avn service update --power-on`). It only asks while the state is `POWEROFF` — not again while Aiven reports `REBUILDING`.
+- **Retries for 20 minutes** on this schedule (measured from the first attempt): now, +3 min, +2, +2, +1, then every 30 s — 29 attempts, the last at exactly 20:00. The timing is wall-clock, so a slow attempt doesn't stretch it.
+- **While it waits, the site stays up.** The server now opens its port immediately instead of waiting for the database (otherwise a 20-minute wait risks the host killing the deploy). `/api/*` answers `503` with `{ "code": "DB_STARTING" }` and the page shows *"Waking up the database…"*, retries by itself every 10 s, and **keeps the person signed in** (before, any startup error logged them out). `/api/health` now returns `{ ok: true, db: "starting" | "ready" | "failed" }`, and stays HTTP 200 so the host's health check doesn't restart the app while the database wakes.
+- **Also handles the database going away while the app is running** (the usual case: someone opens the site after a quiet day). The first failing request gets a 503, the same wake/retry cycle starts, and the person's session is still valid when it comes back.
+- **After 20 minutes it gives up for now but stays alive** (no restart loop); the next request starts another round (at most one per 30 s). Aiven's docs say restoring a service can take "a few minutes to a few hours" depending on backup size, so a very large database may need a second round.
+- **Real misconfiguration is not retried.** Only "can't reach it" errors (refused, timed out, DNS, connection lost, Postgres shutdown codes) are retried. Bad credentials, an unknown database or a broken schema statement still stop the app at startup with a loud error, exactly as before.
+
+**Setup — three environment variables on Render** (see `backend/.env.example`):
+
+| Variable | Where to get it |
+|---|---|
+| `AIVEN_API_TOKEN` | Aiven Console → your profile → Tokens → Generate token (treat it like a password; if you give it an expiry, wake-ups will log `HTTP 401` once it lapses) |
+| `AIVEN_PROJECT` | the project name, as shown in the Console |
+| `AIVEN_SERVICE` | the service name, e.g. `mysql-1a2b3c` |
+
+Without them the app still retries the connection for 20 minutes but cannot start a powered-off service (it logs one warning saying so). **Check them before you deploy:** `cd backend && node scripts/wake-db.js --status` — it talks to Aiven's web API (the same site as the Console), not the database port, so it works from a laptop that can't reach the database. Without `--status` it also powers the service on if it is off.
+
+**Crash fixes found along the way**
+
+- Route handlers are `async` with no `try/catch`, and in Node an unhandled async error **kills the process**, so a database error during any request could take the whole server down. Added `express-async-errors` (new dependency) so these errors reach the error handler; connection errors become a friendly 503, everything else a 500 as before.
+- Postgres: an idle connection dying now logs instead of crashing the process; connection timeouts (10 s) added for both drivers so a dead host fails fast instead of hanging.
+
+**Where the code is:** `backend/config/db-monitor.js` (schedule, state machine, error classification, `/api` gate), `backend/config/aiven.js` (Aiven API client), `backend/server.js` (wiring), `backend/scripts/wake-db.js` (the check script), frontend waiting screen in `public/app.js` and `public/superadmin.js`.
+
+**Tested:** the schedule and every branch on a fake clock (11 checks); the real server against a real MariaDB with a **fake Aiven API** — started with the database down, powered on by the fake API, recovered by itself, then "Aiven powers it off" mid-run and a second recovery with the same login token, giving up after the full schedule and recovering on the next request, and a wrong password failing fast; the waiting screen with a simulated browser. `DB_RETRY_TIME_SCALE=0.01` runs the whole 20-minute schedule 100x faster (a testing aid, leave it unset).
+**Not tested:** against the real Aiven API. The request used is `PUT /v1/project/<project>/service/<service>` with `{"powered": true}` (what the `--power-on` CLI option does); `wake-db.js --status` proves your token, project and service names but not that final PUT, so if the first real wake-up fails the Render log will say `Could not check or start the Aiven service: ... HTTP <code>`.
+
+**Worth checking in Aiven:** its docs say a powered-off service is restored from its latest backup, and that a service **without backups loses its data** when powered off. Because the app re-creates empty tables on startup, a data loss would not be obvious — confirm your service has backups.
+
+### Previous round — sample data migration & run-once migrations
 
 - **`database/migrate_006_sample_data.mariadb.sql`** — 5 demo properties (Sea Point, Constantia, V&A Waterfront, Claremont, Table View) and 32 viewing sign-ins in tenant 1, with repeat visitors across properties (one person is stored as both `072 555 0105` and `+27 72 555 0105` on purpose, to exercise repeat sign-in matching). Everything is fictional (`example.com` emails, `555` numbers). **It is applied automatically, once, on the next start/deploy** — no database client needed.
 - **Run-once migration runner** in `backend/scripts/bootstrap-db.js`: after the (re-runnable) schema step, it applies any file listed in `AUTO_MIGRATIONS` that isn't yet recorded in the new `schema_migrations` table, then records it. To add a future one-off data migration: drop `database/<name>.mariadb.sql` (and a `.postgres.sql` twin if you use Postgres) and add `<name>` to `AUTO_MIGRATIONS`. Only listed files run — the older `migrate_002`–`005` files are untouched and still manual.

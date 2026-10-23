@@ -34,7 +34,11 @@ async function api(path, { method = 'GET', body } = {}) {
     throw new Error('Session expired. Please log in again.');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Request failed.');
+  if (!res.ok) {
+    const err = new Error(data.error || 'Request failed.');
+    err.starting = res.status === 503; // database still waking up — not an auth problem
+    throw err;
+  }
   return data;
 }
 
@@ -52,11 +56,21 @@ async function bootstrap(){
     state.admin = admin;
     await loadTenants();
   } catch (e) {
+    if (e.starting) { // database waking up: keep the session, wait, retry
+      state.loading = false;
+      state.waking = true;
+      render();
+      clearTimeout(wakeRetryTimer);
+      wakeRetryTimer = setTimeout(bootstrap, 10000);
+      return;
+    }
     logout();
   }
+  state.waking = false;
   state.loading = false;
   render();
 }
+let wakeRetryTimer = null;
 
 async function loadTenants(){
   const { tenants } = await api('/tenants');
@@ -72,6 +86,10 @@ function render(){
   document.getElementById('tenantModalOverlay')?.remove();
 
   if (state.loading) { root.innerHTML = `<div class="loading">Opening the platform console\u2026</div>`; return; }
+  if (state.waking) {
+    root.innerHTML = `<div class="login-wrap"><div class="deed"><h2>Waking up the database\u2026</h2><p>The database goes to sleep when it hasn't been used for a while. Starting it again usually takes a few minutes \u2014 this page will keep trying and carry on by itself.</p></div></div>`;
+    return;
+  }
   if (!state.token || !state.admin) { root.innerHTML = renderLogin(); attachLoginHandlers(); return; }
 
   root.innerHTML = `
