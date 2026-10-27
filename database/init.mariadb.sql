@@ -224,6 +224,100 @@ CREATE TABLE IF NOT EXISTS recent_properties (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
+-- LEARNING CENTRE (the section's display name is a per-tenant setting,
+-- so each agency can call it whatever it likes).
+--
+-- tenant_settings — generic per-tenant key/value settings. First use:
+--   key 'learning_centre_name'. A key/value table (rather than another
+--   column on `tenants`) means future per-tenant options need no schema
+--   change — and no ALTER TABLE, which is not safely re-runnable on every
+--   MySQL/MariaDB version this app has to boot on.
+-- courses / lessons — a course is an ordered list of lessons. Videos are
+--   LINKS (YouTube, Vimeo, Loom, Google Drive, a direct .mp4, or any other
+--   URL) — they "sit anywhere"; nothing is stored here but the link.
+--   status / access_level are VARCHAR (validated in the app) rather than
+--   ENUMs so new values can be added without touching the schema.
+--     status:       draft | published | archived
+--     access_level: everyone | agent | admin  — the minimum tenant role
+--                   needed. On a lesson, NULL = inherit the course's level.
+-- course_enrollments / lesson_progress — who is taking what, and what
+--   they've completed. Progress rows are kept if someone un-enrols, so
+--   re-enrolling picks up where they left off.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tenant_settings (
+  tenant_id     INT UNSIGNED NOT NULL,
+  setting_key   VARCHAR(80)  NOT NULL,
+  setting_value VARCHAR(500) NULL,
+  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (tenant_id, setting_key),
+  CONSTRAINT fk_settings_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS courses (
+  id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id    INT UNSIGNED  NOT NULL,
+  title        VARCHAR(200)  NOT NULL,
+  description  TEXT          NULL,
+  category     VARCHAR(80)   NULL,
+  cover_url    VARCHAR(1000) NULL,
+  access_level VARCHAR(20)   NOT NULL DEFAULT 'everyone',
+  status       VARCHAR(20)   NOT NULL DEFAULT 'draft',
+  created_by   INT UNSIGNED  NULL,
+  created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_courses_tenant_status (tenant_id, status),
+  CONSTRAINT fk_courses_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_courses_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS lessons (
+  id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id        INT UNSIGNED  NOT NULL,
+  course_id        INT UNSIGNED  NOT NULL,
+  title            VARCHAR(200)  NOT NULL,
+  description      TEXT          NULL,
+  video_url        VARCHAR(1000) NULL,
+  duration_seconds INT UNSIGNED  NULL,
+  position         INT UNSIGNED  NOT NULL DEFAULT 0,
+  access_level     VARCHAR(20)   NULL,
+  created_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_lessons_course (course_id, position),
+  KEY idx_lessons_tenant (tenant_id),
+  CONSTRAINT fk_lessons_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_lessons_course FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS course_enrollments (
+  id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id    INT UNSIGNED NOT NULL,
+  course_id    INT UNSIGNED NOT NULL,
+  user_id      INT UNSIGNED NOT NULL,
+  enrolled_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at DATETIME     NULL,
+  UNIQUE KEY uq_enrollment (course_id, user_id),
+  KEY idx_enrollments_user (tenant_id, user_id),
+  CONSTRAINT fk_enroll_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_enroll_course FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+  CONSTRAINT fk_enroll_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS lesson_progress (
+  id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id    INT UNSIGNED NOT NULL,
+  course_id    INT UNSIGNED NOT NULL,
+  lesson_id    INT UNSIGNED NOT NULL,
+  user_id      INT UNSIGNED NOT NULL,
+  completed_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_progress (lesson_id, user_id),
+  KEY idx_progress_user (tenant_id, user_id),
+  CONSTRAINT fk_progress_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_progress_course FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+  CONSTRAINT fk_progress_lesson FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE CASCADE,
+  CONSTRAINT fk_progress_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
 -- Seed one default tenant, and the first admin user inside it.
 -- Email:    admin@example.com
 -- Password: ChangeMe123!

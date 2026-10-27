@@ -181,6 +181,75 @@ CREATE INDEX IF NOT EXISTS idx_recent_user ON recent_properties(user_id);
 CREATE INDEX IF NOT EXISTS idx_recent_used_at ON recent_properties(used_at);
 
 -- ------------------------------------------------------------
+-- LEARNING CENTRE (the section's display name is a per-tenant setting,
+-- so each agency can call it whatever it likes). See init.mariadb.sql for
+-- the full explanation of each table; the design is identical.
+--   status:       draft | published | archived        (validated in the app)
+--   access_level: everyone | agent | admin           (minimum tenant role;
+--                 on a lesson, NULL = inherit the course's level)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tenant_settings (
+  tenant_id     INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  setting_key   VARCHAR(80) NOT NULL,
+  setting_value VARCHAR(500),
+  updated_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (tenant_id, setting_key)
+);
+
+CREATE TABLE IF NOT EXISTS courses (
+  id           SERIAL PRIMARY KEY,
+  tenant_id    INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  title        VARCHAR(200) NOT NULL,
+  description  TEXT,
+  category     VARCHAR(80),
+  cover_url    VARCHAR(1000),
+  access_level VARCHAR(20) NOT NULL DEFAULT 'everyone',
+  status       VARCHAR(20) NOT NULL DEFAULT 'draft',
+  created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_courses_tenant_status ON courses(tenant_id, status);
+
+CREATE TABLE IF NOT EXISTS lessons (
+  id               SERIAL PRIMARY KEY,
+  tenant_id        INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  course_id        INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  title            VARCHAR(200) NOT NULL,
+  description      TEXT,
+  video_url        VARCHAR(1000),
+  duration_seconds INTEGER,
+  position         INTEGER NOT NULL DEFAULT 0,
+  access_level     VARCHAR(20),
+  created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_lessons_course ON lessons(course_id, position);
+CREATE INDEX IF NOT EXISTS idx_lessons_tenant ON lessons(tenant_id);
+
+CREATE TABLE IF NOT EXISTS course_enrollments (
+  id           SERIAL PRIMARY KEY,
+  tenant_id    INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  course_id    INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  enrolled_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMP,
+  CONSTRAINT uq_enrollment UNIQUE (course_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_enrollments_user ON course_enrollments(tenant_id, user_id);
+
+CREATE TABLE IF NOT EXISTS lesson_progress (
+  id           SERIAL PRIMARY KEY,
+  tenant_id    INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  course_id    INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  lesson_id    INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  completed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_progress UNIQUE (lesson_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_progress_user ON lesson_progress(tenant_id, user_id);
+
+-- ------------------------------------------------------------
 -- Seed the default tenant and its first admin user.
 -- Email:    admin@example.com
 -- Password: ChangeMe123!

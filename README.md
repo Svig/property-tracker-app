@@ -169,10 +169,29 @@ All endpoints except `/api/auth/login` require `Authorization: Bearer <token>`.
 | GET | `/api/clients/export/csv` | any logged-in user | download CSV |
 | GET | `/api/viewing/current` | any logged-in user | current property + recents |
 | POST | `/api/viewing/current` | any logged-in user | set the property being shown |
+| GET/PUT | `/api/learning/config` | any / admin | the agency's name for the Learning Centre |
+| GET | `/api/learning/courses`, `/courses/:id`, `/my` | any logged-in user | catalogue, one course + lessons, my progress |
+| POST/DELETE | `/api/learning/courses/:id/enroll` | any logged-in user | enrol / leave |
+| POST/DELETE | `/api/learning/lessons/:id/complete` | any logged-in user | tick / untick a lesson |
+| POST/PATCH/DELETE | `/api/learning/courses`, `/courses/:id`, `/courses/:id/lessons`, `/lessons/:id`, `/courses/:id/lessons/reorder` | admin | create and manage courses and lessons |
 
 ---
 
-## Changelog — database wake-up & retries (latest round)
+## Changelog — Learning Centre (base) (latest round)
+
+A first slice of a Learning Centre, built as a base to grow in small chunks.
+
+- **Name is per agency.** An admin renames it under *Manage*; the menu tab and heading follow. Stored in `tenant_settings` (key `learning_centre_name`), default "Learning Centre".
+- **Courses and lessons.** Admins create courses (title, description, category, optional cover image link, draft/published/archived) and add, edit, reorder and delete lessons. Drafts are visible to admins only; archived courses stay visible to people already enrolled.
+- **Videos are links.** Paste a YouTube, Vimeo, Loom or Google Drive link (plays in the page), a direct `.mp4` link (native player) or any other https link (opens in a new tab). Embed URLs are rebuilt from the validated video ID, never from the pasted text. Uploading real files is a later chunk: it needs object storage (S3/R2 etc.), which this app doesn't have yet.
+- **Learner view.** *My learning* (in progress, to do, completed, stats), *Catalogue* (search, filter, category) and a course page with lesson list, progress bar and "mark complete".
+- **Restrictions.** Each course and lesson has a level: everyone, agents or admins. A lesson can only be stricter than its course. Locked items show the title only; the video link is never sent to the browser.
+- **Database.** New tables `tenant_settings`, `courses`, `lessons`, `course_enrollments`, `lesson_progress` in both `init.*.sql` files (created automatically on startup, every query filtered by tenant).
+- **Tests.** 50 API tests pass on both MariaDB and PostgreSQL, 27-case video-link parser test, and a real-browser (Chromium) test covering learner, admin and mobile flows.
+
+**Later chunks (not built yet):** file upload/hosting, auto-complete at video end and resume position, sections/modules, quizzes and certificates, admin reports on learner progress, the read-only `viewer` role, per-person/assigned restrictions, and a super-admin-managed section name.
+
+### Previous round — database wake-up & retries
 
 **The problem:** Aiven powers idle free-tier services off, and a powered-off service does **not** wake when something connects to it — only the Console button or Aiven's API turns it back on. So after a quiet spell the app couldn't reach the database until you powered it on by hand.
 

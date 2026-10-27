@@ -10,6 +10,7 @@ const clientRoutes = require('./routes/clients.routes');
 const viewingRoutes = require('./routes/viewing.routes');
 const propertiesRoutes = require('./routes/properties.routes');
 const superadminRoutes = require('./routes/superadmin.routes');
+const learningRoutes = require('./routes/learning.routes');
 const { bootstrapDatabase } = require('./scripts/bootstrap-db');
 const { createMonitor, apiGate, isConnectionError } = require('./config/db-monitor');
 
@@ -32,6 +33,7 @@ app.use('/api/clients', clientRoutes);
 app.use('/api/viewing', viewingRoutes);
 app.use('/api/properties', propertiesRoutes);
 app.use('/api/superadmin', superadminRoutes);
+app.use('/api/learning', learningRoutes);
 
 // `ok` = the web server is up (keeps the host's health check green while the database wakes); `db` = database state.
 app.get('/api/health', (req, res) => res.json({ ok: true, db: dbMonitor.state }));
@@ -50,6 +52,10 @@ app.get('*', (req, res) => {
 
 // Basic error handler so a thrown error returns JSON instead of crashing silently
 app.use((err, req, res, next) => {
+  // Mistakes in the request itself are the client's problem (4xx), not a server error.
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'The request body is not valid JSON.' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'That request is too large.' });
+
   // The database dropped out mid-request: answer 503 and start the wake/retry cycle.
   if (isConnectionError(err)) {
     dbMonitor.reportFailure(err);

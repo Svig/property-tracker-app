@@ -25,7 +25,7 @@ const state = {
   token: localStorage.getItem('vr_token') || null,
   user: null,
   theme: null,               // { appName, primaryColor, brassColor, logoUrl } — this tenant's branding, applied at login/session-restore
-  view: 'signin',           // signin | dashboard | users | properties
+  view: 'signin',           // signin | dashboard | users | properties | learning
   clients: [],
   viewing: { property:'', propertyId:null, listingUrl:null, recent:[] },
   users: [],
@@ -36,17 +36,23 @@ const state = {
   visitorsForPropertyId: null,
   agentsForPropertyId: null,
   loading: true,
+  learningName: 'Learning Centre', // this agency's name for the learning section (set by an admin, shown on the menu tab)
   waking: false,             // true while the server says the database is starting up (Aiven powers idle databases off)
-  toast: null,
   authError: null,
 };
 
 const root = document.getElementById('root');
 
+let toastTimer = null;
 function showToast(msg){
-  state.toast = msg;
-  render();
-  setTimeout(() => { state.toast = null; render(); }, 2600);
+  // Drawn straight into <body>, NOT through render(): a full re-render would reset whatever is on
+  // screen — a playing course video, a half-typed form.
+  document.getElementById('toast')?.remove();
+  const el = document.createElement('div');
+  el.className = 'toast'; el.id = 'toast'; el.textContent = msg;
+  document.body.appendChild(el);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.remove(), 2600);
 }
 
 // ---------------- API helper ----------------
@@ -70,6 +76,8 @@ async function api(path, { method = 'GET', body } = {}) {
 function logout(){
   state.token = null;
   state.user = null;
+  resetLearning();                       // never show one person's learning data to the next
+  state.learningName = 'Learning Centre';
   localStorage.removeItem('vr_token');
   resetTheme();
   render();
@@ -124,7 +132,11 @@ async function bootstrap(){
 let wakeRetryTimer = null;
 
 async function loadAll(){
-  const [clientsRes, viewingRes, propertiesRes] = await Promise.all([api('/clients'), api('/viewing/current'), api('/properties')]);
+  const [clientsRes, viewingRes, propertiesRes, learningCfg] = await Promise.all([
+    api('/clients'), api('/viewing/current'), api('/properties'),
+    api('/learning/config').catch(() => null),   // the learning name must never be able to break login
+  ]);
+  state.learningName = (learningCfg && learningCfg.name) || 'Learning Centre';
   state.clients = clientsRes.clients;
   state.viewing = viewingRes;
   state.properties = propertiesRes.properties;
@@ -148,6 +160,7 @@ function render(){
   document.getElementById('visitorsOverlay')?.remove();
   document.getElementById('agentsOverlay')?.remove();
   document.getElementById('exportOverlay')?.remove();
+  document.getElementById('learnOverlay')?.remove();
 
   if (state.loading) { root.innerHTML = `<div class="loading">Opening the register\u2026</div>`; return; }
   if (state.waking) {
@@ -176,6 +189,7 @@ function render(){
         <button data-view="dashboard" class="${state.view==='dashboard'?'active':''}">Dashboard</button>
         ${state.user.role==='admin' ? `<button data-view="users" class="${state.view==='users'?'active':''}">Manage Users</button>` : ''}
         <button data-view="properties" class="${state.view==='properties'?'active':''}">Properties</button>
+        <button data-view="learning" class="${state.view==='learning'?'active':''}">${escapeHtml(state.learningName)}</button>
       </div>
       <div class="who">
         ${localStorage.getItem('vr_superadmin_token') ? `<button id="backToSuperAdminBtn" style="border-color:var(--rust);color:#D98F73">\u2190 Back to Super Admin</button>` : ''}
@@ -184,7 +198,6 @@ function render(){
       </div>
     </header>
     <main id="main"></main>
-    ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
   `;
 
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
@@ -201,6 +214,7 @@ function render(){
   else if (state.view === 'dashboard') { main.innerHTML = renderDashboard(); attachDashboardHandlers(); }
   else if (state.view === 'users') { main.innerHTML = renderUsers(); attachUsersHandlers(); }
   else if (state.view === 'properties') { main.innerHTML = renderProperties(); attachPropertiesHandlers(); }
+  else if (state.view === 'learning') { main.innerHTML = renderLearning(); attachLearningHandlers(); }
 
   if (state.selectedClientId) {
     document.body.insertAdjacentHTML('beforeend', renderDrawer());
@@ -221,6 +235,10 @@ function render(){
   if (exportDialog) {
     document.body.insertAdjacentHTML('beforeend', renderExportModal());
     attachExportModalHandlers();
+  }
+  if (learn.modal) {
+    document.body.insertAdjacentHTML('beforeend', renderLearningModal());
+    attachLearningModal();
   }
 }
 
