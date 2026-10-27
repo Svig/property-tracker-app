@@ -189,6 +189,8 @@ A first slice of a Learning Centre, built as a base to grow in small chunks.
 - **Database.** New tables `tenant_settings`, `courses`, `lessons`, `course_enrollments`, `lesson_progress` in both `init.*.sql` files (created automatically on startup, every query filtered by tenant).
 - **Tests.** 50 API tests pass on both MariaDB and PostgreSQL, 27-case video-link parser test, and a real-browser (Chromium) test covering learner, admin and mobile flows.
 
+- **Sample courses.** Migration 007 adds 4 published sample courses (9 lessons) to tenant 1 on the next deploy, using public YouTube videos: Home Staging Basics, Showing Homes & Open Houses, Real Estate Basics, and an admins-only Property Development Crash Course. It runs once; delete them under *Manage* and they stay gone. Lesson lengths are blank, and a video whose owner has disabled embedding will show a blank player (edit the lesson to swap the link).
+
 **Later chunks (not built yet):** file upload/hosting, auto-complete at video end and resume position, sections/modules, quizzes and certificates, admin reports on learner progress, the read-only `viewer` role, per-person/assigned restrictions, and a super-admin-managed section name.
 
 ### Previous round — database wake-up & retries

@@ -92,7 +92,7 @@ function prepareStatements(raw) {
 // database type is skipped. A failure here is logged but does NOT stop the
 // server (it's sample/demo data, not schema) and is retried on the next
 // start — the SQL is written so a partial run is safe to repeat.
-const AUTO_MIGRATIONS = ['migrate_006_sample_data'];
+const AUTO_MIGRATIONS = ['migrate_006_sample_data', 'migrate_007_sample_courses'];
 
 async function applyAutoMigrations() {
   const dialect = isPostgres() ? 'postgres' : 'mariadb';
